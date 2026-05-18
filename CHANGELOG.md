@@ -2,6 +2,19 @@
 
 All notable changes to vibe-kit are documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-pre.1] — 2026-05-18 (canary fixes)
+
+Day-1 dogfooding on first canary repo (`myi1/remax-hub-portal`) surfaced four real bugs in `discover` that the bats fixtures didn't catch. All fixed + new regression tests added.
+
+### Fixed
+- **Nested `package.json` detection.** Previously only checked repo root. Now uses `git ls-files` to find any manifest under `apps/*`, `packages/*`, or elsewhere (excludes `node_modules`, `vendor`, `.venv`). Prioritizes `apps/` over `packages/` over deeper paths. Discovered commands get a `(cd <dir> && ...)` prefix when the manifest isn't at repo root, so the CLAUDE.md template renders correct invocations. Same logic applied to `requirements.txt`, `pyproject.toml`, `go.mod`, `Cargo.toml`, `Gemfile`. (canary bug 1)
+- **TODO file globs broader.** Added `.html`, `.htm`, `.erb`, `.vue`, `.svelte`, `.astro`, `.cs`. Catches TODOs in template files and legacy/migration code. (canary bug 2)
+- **Process-doc heuristic for agent files.** Capitalized root-level `.md` files that aren't standard project docs (README/CHANGELOG/LICENSE/CONTRIBUTING/CODE_OF_CONDUCT/SECURITY/AUTHORS/MAINTAINERS/NOTICE/INSTALL/SUPPORT/GOVERNANCE/HISTORY/UPGRADE/TROUBLESHOOTING/FAQ/TODO/BACKLOG/WHATS_NEW/RELEASE_NOTES) now get detected as agent-context files. Catches user-authored process docs like `BRAIN.md`, `DECISION_LOG.md`, `TASK_QUEUE.md`, `SOURCE_OF_TRUTH.md`, `ASSUMPTIONS_REGISTER.md`, `QA_CHECKLIST.md`, `REPO_STRUCTURE.md`. (canary bug 4)
+- **Stdout summary stray `0`.** `grep -c . || echo 0` printed `0` twice when input was empty (once from grep, once from echo). Replaced with pre-computed counts that default to 0 cleanly. (canary bug 3)
+
+### Added
+- 3 new bats tests + 2 new fixtures (`monorepo-nested-pkg/`, `with-process-docs/`). Suite now at 32 green tests (29 prior + 3 regression).
+
 ## [0.1.0-pre] — 2026-05-18
 
 Initial public-but-quiet commit. Full launch deferred to week 3-4 after canary + 4-5 real retrofits prove the workflow.

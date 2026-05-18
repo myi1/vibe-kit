@@ -298,6 +298,49 @@ _load_fixture() {
 }
 
 # ============================================================================
+# Canary-discovered bugs — regression tests (v0.1.0-pre.1)
+# ============================================================================
+
+@test "discover: nested package.json (apps/hub/) — picks up libs + scripts when root has no manifest" {
+  _load_fixture monorepo-nested-pkg
+  run "$VIBE_RETROFIT" discover
+  [ "$status" -eq 0 ]
+  # Libraries should be populated from apps/hub/package.json
+  run jq -r '.libraries[]' .vibe-kit-discovery.json
+  [[ "$output" == *"next"* ]]
+  [[ "$output" == *"@prisma/client"* ]]
+  [[ "$output" == *"next-auth"* ]]
+  # Commands should be cd-prefixed since manifest isn't at root
+  run jq -r '.commands.dev' .vibe-kit-discovery.json
+  [[ "$output" == *"cd apps/hub"* ]]
+  [[ "$output" == *"next dev"* ]]
+}
+
+@test "discover: capitalized root .md files are detected as process docs (BRAIN.md, DECISION_LOG.md, TASK_QUEUE.md)" {
+  _load_fixture with-process-docs
+  run "$VIBE_RETROFIT" discover
+  [ "$status" -eq 0 ]
+  # All three process docs picked up
+  run jq -r '.agent_context_files[]' .vibe-kit-discovery.json
+  [[ "$output" == *"BRAIN.md"* ]]
+  [[ "$output" == *"DECISION_LOG.md"* ]]
+  [[ "$output" == *"TASK_QUEUE.md"* ]]
+  # Standard project docs NOT included
+  run jq -r '.agent_context_files | join(" ")' .vibe-kit-discovery.json
+  [[ "$output" != *"README.md"* ]]
+  [[ "$output" != *"CHANGELOG.md"* ]]
+}
+
+@test "discover: stdout summary doesn't print stray '0' when libs is empty" {
+  _load_fixture empty-repo
+  run "$VIBE_RETROFIT" discover
+  [ "$status" -eq 0 ]
+  # The summary output should NOT contain a line that is just "0" (the old bug
+  # where `grep -c . || echo 0` printed 0 twice).
+  ! echo "$output" | grep -E '^[[:space:]]*0[[:space:]]*$'
+}
+
+# ============================================================================
 # Rollback dry-run
 # ============================================================================
 
