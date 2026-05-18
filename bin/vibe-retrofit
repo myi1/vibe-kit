@@ -1114,8 +1114,12 @@ _scaffold_gstack_reference() {
     done
 
     if [ -s "$_tmp_jsonl" ]; then
-      # Sort by confidence desc, dedup by key (jq does this in two passes)
-      jq -s '
+      # Sort by confidence desc, dedup by key (jq does this in two passes).
+      # NOTE: -r is critical here. Without it, jq prints each constructed string
+      # as a JSON-quoted value (with literal \n escapes) instead of as raw text
+      # with real newlines. The output ends up as `"## KEY ... \n\n ..."` on
+      # one line per entry — unreadable as markdown.
+      jq -sr '
         group_by(.key) | map(sort_by(.confidence // 0) | last) | sort_by(-(.confidence // 0))
         | .[] |
           "## \(.key)  ·  confidence \(.confidence // "?")/10  ·  \(.type // "?")\n\n" +

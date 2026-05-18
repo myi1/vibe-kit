@@ -2,6 +2,24 @@
 
 All notable changes to vibe-kit are documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-pre.6] — 2026-05-18 (jq -r in learnings rendering)
+
+Caught inspecting the canary's `gstack-learnings.md` after Tier 2 succeeded end-to-end.
+
+### Fixed
+- **Bug 11: `gstack-learnings.md` content was JSON-quoted instead of markdown.** The jq invocation in `_scaffold_gstack_reference` was `jq -s ...` not `jq -sr ...` — missing the `-r` raw-output flag. Without it, jq prints each constructed string as a JSON-encoded value (literal `\n` escapes, surrounding quotes), turning 19 confidence-10 institutional-knowledge entries into one-line garbage. Fix: add `-r`.
+
+### Tests
+- **Strengthened test 34** with anchored grep (`^## BIG_KEY` instead of substring-only) so a JSON-quoted regression actually fails the test. Plus a `! grep -F '\n'` belt-and-suspenders check.
+- The original test passed on the broken output because the assertion only checked substrings. **Lesson logged: assertions on generated docs must be shape-aware or anchored, not just content-substring.**
+
+## [0.1.0-pre.5] — 2026-05-18 (install.sh bash-3.2 var-parse fix)
+
+Caught when re-running install.sh after v0.1.0-pre.4.
+
+### Fixed
+- **install.sh: `$SKILL_DIR…` parsed greedily by bash 3.2.** The UTF-8 ellipsis bytes were consumed as part of the variable name. With `set -u`, "unbound variable" fired. Fix: use braced form `${SKILL_DIR}…`. Verified no other `$VAR<non-ascii>` patterns in the codebase.
+
 ## [0.1.0-pre.4] — 2026-05-18 (`set -e` traps in scaffolder)
 
 Caught when actually applying Tier 2 to canary on a fresh branch off `origin/main`. The script silently exited mid-`_scaffold_gstack_reference` and never reached `cmd_write_version`, leaving the canary half-retrofitted (no .vibe-kit-version, empty learnings.md, no symlinks).

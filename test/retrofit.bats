@@ -425,10 +425,15 @@ EOF
   [ -d docs/vibe-kit/reference ]
   [ -f docs/vibe-kit/reference/README.md ]
   [ -f docs/vibe-kit/reference/gstack-learnings.md ]
-  # Learnings markdown contains the key + insight + confidence
-  grep -q "BIG_KEY" docs/vibe-kit/reference/gstack-learnings.md
+  # Learnings markdown contains the key + insight + confidence.
+  # Use anchored patterns so we catch bug 11 (jq -s without -r emits JSON-quoted
+  # strings with literal \n — substrings still match but markdown is unreadable).
+  grep -q "^## BIG_KEY" docs/vibe-kit/reference/gstack-learnings.md
   grep -q "confidence 10/10" docs/vibe-kit/reference/gstack-learnings.md
   grep -q "important institutional knowledge" docs/vibe-kit/reference/gstack-learnings.md
+  # Belt + suspenders: assert there are NO lines containing literal \n escapes
+  # (which would prove JSON-encoded output, not raw markdown)
+  ! grep -F '\n' docs/vibe-kit/reference/gstack-learnings.md
   # Symlinks exist
   [ -L docs/vibe-kit/reference/gstack-designs/yahya-main-design-20260518.md ]
   [ -L docs/vibe-kit/reference/gstack-ceo-plans/2026-05-18-sample.md ]
