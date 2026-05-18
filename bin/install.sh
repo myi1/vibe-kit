@@ -60,7 +60,7 @@ _ok "Wrote wrapper at $WRAPPER"
 
 # ── Register skill ──────────────────────────────────────────────────────────
 if [ -f "$VIBE_KIT_ROOT/skill/SKILL.md" ]; then
-  _log "Registering skill at $SKILL_DIR…"
+  _log "Registering skill at ${SKILL_DIR}…"
   mkdir -p "$SKILL_DIR"
   cp "$VIBE_KIT_ROOT/skill/SKILL.md" "$SKILL_DIR/SKILL.md"
   _ok "Skill registered. Available as /vibe-retrofit in Claude Code."
