@@ -23,7 +23,16 @@ Ran `vibe-retrofit discover` on `~/Documents/GitHub/remax-hub-portal` (canary re
    - **Fix:** added heuristic — any root-level capitalized `.md` that isn't a standard project doc gets included.
    - **Regression test:** `test/fixtures/with-process-docs/` + 1 bats test.
 
-**Lesson:** the bats fixtures were "ideal-shaped" — they covered the happy paths and obvious edge cases. The canary surfaced shapes I hadn't imagined (monorepo, custom process-doc conventions). This is exactly why the design said "Day 2-3 canary will catch things fixtures can't."
+### 2026-05-18 — fix 2 then revealed bug 5 (cascading discovery)
+
+After fixing bugs 1-4 and re-running discover on canary, hit `Argument list too long` from `jq`. Investigation: only 13 TODO matches but 12.9 MB total output — because bug-2's broader globs now include `.html`, and the canary has minified single-line HTML legacy files (each ~1 MB) where one TODO match emits the entire file content.
+
+- **Fix:** truncate each match to 200 chars, cap total stored matches to 200. Anything beyond is noise for the human report and risks blowing argv.
+- **Regression test:** `test/fixtures/with-huge-line/` with a 5KB single-line HTML file containing one TODO. Asserts stored match length is ≤ 300 chars and truncation marker is visible.
+
+**Lesson:** the bats fixtures were "ideal-shaped" — they covered the happy paths and obvious edge cases. The canary surfaced shapes I hadn't imagined (monorepo, custom process-doc conventions, single-line minified files). This is exactly why the design said "Day 2-3 canary will catch things fixtures can't."
+
+**Second-order lesson:** fixing one bug can reveal another. Bug 5 was hidden by bug 2 (without the .html glob, the 12.9 MB never materialized). Re-running the canary after each batch of fixes is the gate that catches cascading issues.
 
 ## Recurring agent mistakes
 

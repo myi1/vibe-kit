@@ -169,13 +169,22 @@ $root_md"
 
   # 3. TODO scatter via git grep (respects .gitignore). Includes web template
   # formats (.html/.erb/.vue/.svelte/.astro) for legacy/migration repos.
+  # Truncate each match to 200 chars (defends against minified single-line
+  # HTML files where one match emits an entire file's worth of content) and
+  # cap total stored matches to 200 (anything beyond is noise for the human
+  # report and risks argv-too-large when passed to jq).
   local todo_raw=""
+  local TODO_MAX_MATCHES=200
+  local TODO_MAX_LINE=200
   todo_raw="$(git grep -n -E 'TODO|FIXME|XXX|HACK' -- \
     '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' \
     '*.py' '*.rs' '*.go' '*.rb' '*.java' '*.kt' '*.swift' '*.c' '*.h' '*.cpp' '*.hpp' '*.cs' \
     '*.md' '*.sh' '*.bash' '*.zsh' \
     '*.html' '*.htm' '*.erb' '*.vue' '*.svelte' '*.astro' \
-    2>/dev/null || true)"
+    2>/dev/null | head -"$TODO_MAX_MATCHES" | awk -v max="$TODO_MAX_LINE" '
+      { if (length($0) > max) print substr($0, 1, max) " …[truncated]"
+        else print }' \
+    || true)"
   local todo_count
   todo_count="$(printf '%s' "$todo_raw" | grep -c . || true)"
 

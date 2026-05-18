@@ -4,16 +4,17 @@ All notable changes to vibe-kit are documented in this file. Format: [Keep a Cha
 
 ## [0.1.0-pre.1] — 2026-05-18 (canary fixes)
 
-Day-1 dogfooding on first canary repo (`myi1/remax-hub-portal`) surfaced four real bugs in `discover` that the bats fixtures didn't catch. All fixed + new regression tests added.
+Day-1 dogfooding on first canary repo (`myi1/remax-hub-portal`) surfaced five real bugs in `discover` that the bats fixtures didn't catch. All fixed + new regression tests added.
 
 ### Fixed
 - **Nested `package.json` detection.** Previously only checked repo root. Now uses `git ls-files` to find any manifest under `apps/*`, `packages/*`, or elsewhere (excludes `node_modules`, `vendor`, `.venv`). Prioritizes `apps/` over `packages/` over deeper paths. Discovered commands get a `(cd <dir> && ...)` prefix when the manifest isn't at repo root, so the CLAUDE.md template renders correct invocations. Same logic applied to `requirements.txt`, `pyproject.toml`, `go.mod`, `Cargo.toml`, `Gemfile`. (canary bug 1)
 - **TODO file globs broader.** Added `.html`, `.htm`, `.erb`, `.vue`, `.svelte`, `.astro`, `.cs`. Catches TODOs in template files and legacy/migration code. (canary bug 2)
 - **Process-doc heuristic for agent files.** Capitalized root-level `.md` files that aren't standard project docs (README/CHANGELOG/LICENSE/CONTRIBUTING/CODE_OF_CONDUCT/SECURITY/AUTHORS/MAINTAINERS/NOTICE/INSTALL/SUPPORT/GOVERNANCE/HISTORY/UPGRADE/TROUBLESHOOTING/FAQ/TODO/BACKLOG/WHATS_NEW/RELEASE_NOTES) now get detected as agent-context files. Catches user-authored process docs like `BRAIN.md`, `DECISION_LOG.md`, `TASK_QUEUE.md`, `SOURCE_OF_TRUTH.md`, `ASSUMPTIONS_REGISTER.md`, `QA_CHECKLIST.md`, `REPO_STRUCTURE.md`. (canary bug 4)
 - **Stdout summary stray `0`.** `grep -c . || echo 0` printed `0` twice when input was empty (once from grep, once from echo). Replaced with pre-computed counts that default to 0 cleanly. (canary bug 3)
+- **Per-match truncation + total cap on TODO list.** Bug 5 surfaced when bug 2's broader globs ran on the canary: 13 TODO matches totalled 12.9 MB because minified HTML files emit one match per giant single-line file. `jq --arg` blew up with `Argument list too long`. Fix: each match is truncated to 200 chars and total stored matches capped to 200 (rest are noise for the human report anyway). (canary bug 5)
 
 ### Added
-- 3 new bats tests + 2 new fixtures (`monorepo-nested-pkg/`, `with-process-docs/`). Suite now at 32 green tests (29 prior + 3 regression).
+- 4 new bats tests + 3 new fixtures (`monorepo-nested-pkg/`, `with-process-docs/`, `with-huge-line/`). Suite now at 33 green tests (29 prior + 4 regression).
 
 ## [0.1.0-pre] — 2026-05-18
 

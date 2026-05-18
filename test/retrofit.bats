@@ -331,6 +331,19 @@ _load_fixture() {
   [[ "$output" != *"CHANGELOG.md"* ]]
 }
 
+@test "discover: truncates per-match lines longer than 200 chars (minified-HTML protection)" {
+  _load_fixture with-huge-line
+  run "$VIBE_RETROFIT" discover
+  [ "$status" -eq 0 ]
+  # The single TODO is in a 5KB single-line file. After truncation the stored
+  # match should be ≤ ~250 chars (200 line + "…[truncated]" marker), not 5K+.
+  longest=$(jq -r '.todos[] | length' .vibe-kit-discovery.json | sort -rn | head -1)
+  [ "$longest" -le 300 ]
+  # And the match content is preserved enough to find the TODO marker
+  run jq -r '.todos[0]' .vibe-kit-discovery.json
+  [[ "$output" == *"truncated"* ]]
+}
+
 @test "discover: stdout summary doesn't print stray '0' when libs is empty" {
   _load_fixture empty-repo
   run "$VIBE_RETROFIT" discover
