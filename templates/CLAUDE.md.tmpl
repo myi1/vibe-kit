@@ -3,6 +3,33 @@
 
 This block is managed by `vibe-retrofit`. Custom edits inside will be overwritten on re-run unless you move them above this marker or use `--force` (see CONTRIBUTING.md in vibe-kit).
 
+## Session start ritual (imperative — do this BEFORE responding to the user's first request)
+
+These steps are not optional. Skipping them means relearning patterns past sessions already established and re-causing pitfalls already documented.
+
+1. **Read this file in full.** All sections below contain conventions you must follow.
+2. **Read `docs/vibe-kit/reference/gstack-learnings.md` if it exists.** Those entries are high-confidence patterns, pitfalls, conventions, and architectural decisions from prior gstack sessions on this repo — each one was logged because someone (often the user) hit a specific case worth remembering. Verify any assumption you're about to act on against this file. Quote the relevant entry's key in your reply when applying it.
+3. **Check pending work:** if `.taskmaster/` exists, run `task-master next` to surface the highest-priority queued task. Show the user what's queued before they tell you what they want — they may have forgotten what was already prioritized.
+4. **Scan related prior work:** if the user's first request touches a recognizable system area (auth, billing, scraping, prompts, deploy, schema, etc.), list relevant files under `docs/vibe-kit/reference/gstack-designs/` and `docs/vibe-kit/reference/gstack-ceo-plans/` BEFORE proposing changes. Read the most-relevant one if you're about to make architectural or scope decisions.
+5. **Note the session start in the user's first reply.** A short "Loaded N learnings, M pending tasks, recent designs: …" line is the proof to the user that the ritual ran.
+
+## Task tracking integration
+
+When `.taskmaster/` exists, treat Taskmaster as the single source of truth for "what work is pending or in flight":
+
+- **Before starting a discrete unit of work** that might map to an existing task: `task-master list --status=pending | head -20`. If the work matches, use that task's ID.
+- **When you complete a unit of work** that maps to a Taskmaster task: `task-master set-status <id> done`.
+- **When the user mentions new work** not covered by existing tasks: `task-master add-task --prompt "<clear description with file paths if known>"` and reference the returned task ID.
+- **When the user asks "what should I work on?"**: run `task-master next` first; then propose based on what's queued. Don't invent priority order.
+
+If `.taskmaster/` does NOT exist, this section doesn't apply — fall back to whatever task surface the user uses (TODOS.md, GitHub Issues, etc., which the discovery report identified).
+
+## Context7 for third-party libraries
+
+For any code you write that imports, calls, or configures a third-party library, framework, SDK, or API: use the Context7 MCP server to fetch current docs before writing. Do not rely on library memory — APIs change and your training data may be stale. Context7 is configured in `~/.claude.json`; tools appear as `mcp__context7__*`.
+
+This applies especially to: {{install_command}} dependencies listed in the manifest (the discovery report has the top-20 list).
+
 ## Commands
 
 Run from project root:
@@ -13,7 +40,7 @@ Run from project root:
 - Tests: `{{test_command}}`
 - Single test: see `{{test_command}}` docs for path-targeted invocation
 
-(If any of these are blank, fill them in. They were not detected during discovery — meaning the project has no `package.json` script, `Makefile` target, or README mention that matched. Filling them in is the highest-leverage edit you can make in this file.)
+If any of these are blank, fill them in. They were not detected during discovery — meaning the project has no `package.json` script, `Makefile` target, or README mention that matched. Filling them in is the highest-leverage edit you can make in this file.
 
 ## Skill routing
 
@@ -31,6 +58,7 @@ Key routing rules:
 - Ship / deploy / PR → invoke `/ship` or `/land-and-deploy`
 - Save progress → invoke `/context-save`
 - Resume context → invoke `/context-restore`
+- Need vibe-kit's session-start ritual on-demand → invoke `/vibe-start` (only on retrofitted repos)
 
 ## Done means
 
@@ -41,6 +69,8 @@ A task is NOT done until:
 - Diff reviewed (use `/review` for non-trivial diffs)
 - No unrelated files changed
 - Edge cases listed, remaining risks disclosed
+- The Taskmaster task it relates to is marked `done` (if Taskmaster is in use)
+- Any new gotcha worth remembering is captured in `KNOWN_GOTCHAS.md` or via `/learn`
 
 "Should work" is not a signal. Run the check yourself.
 
@@ -49,8 +79,9 @@ A task is NOT done until:
 - Do not suppress errors to make tests pass.
 - Do not change unrelated files.
 - Do not rewrite architecture unless explicitly requested.
-- Do not use outdated library knowledge. Use Context7 for current third-party APIs (see Context7 section below).
+- Do not use outdated library knowledge — use Context7 for current third-party APIs.
 - Do not add new dependencies without asking.
 - Do not declare completion until verification passes or failure is explained.
+- Do not skip the session-start ritual to "save context" — the ritual IS the context.
 
 <!-- /vibe-kit-retrofit:v0.1 -->

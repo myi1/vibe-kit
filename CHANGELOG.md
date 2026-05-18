@@ -2,6 +2,22 @@
 
 All notable changes to vibe-kit are documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-pre.7] — 2026-05-18 (CLAUDE.md actually instructs Claude — the missing muscle)
+
+User flagged the real gap after canary retrofit: "we built the bones for context + task tracking but didn't actually give the AI's vibe coding better context or task tracking." The retrofit was producing static artifacts (gstack-learnings.md, symlinks) but the CLAUDE.md block didn't tell Claude to USE them. Session behavior didn't change.
+
+### Added
+- **Imperative session-start ritual section in `CLAUDE.md.tmpl`.** Five steps Claude must execute before responding to the first request: read CLAUDE.md fully, read `docs/vibe-kit/reference/gstack-learnings.md`, run `task-master next` if `.taskmaster/` exists, scan relevant prior designs for the request's system area, and report "Loaded N learnings, M tasks, recent designs: …" in the first reply as proof the ritual ran.
+- **Task tracking integration section.** Concrete instructions: list pending tasks before starting work; mark done on completion; capture new work via `add-task`; never invent priority order — always `task-master next` first.
+- **Context7 section** moved out of "do not" list into its own block with explicit "tools appear as `mcp__context7__*`" guidance.
+- **"Done means" expanded** to include "the Taskmaster task it relates to is marked done" and "any new gotcha worth remembering is captured in KNOWN_GOTCHAS.md or via /learn".
+
+### Why this matters
+The 19 high-confidence learnings on remax-hub-portal sit in `docs/vibe-kit/reference/gstack-learnings.md`. Without explicit instructions, Claude might glance at CLAUDE.md and skip the file. With explicit imperative + "quote the entry key when applying it" expectation, Claude actually loads + uses the institutional knowledge. Same logic for Taskmaster.
+
+### Migration
+Re-run `vibe-retrofit tier 2` (or tier 3) on any retrofitted repo. The block hash will change, idempotent merge replaces the old block with the new one (or refuses if you've edited inside it — use `--force` if so).
+
 ## [0.1.0-pre.6] — 2026-05-18 (jq -r in learnings rendering)
 
 Caught inspecting the canary's `gstack-learnings.md` after Tier 2 succeeded end-to-end.
