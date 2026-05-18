@@ -2,6 +2,25 @@
 
 All notable changes to vibe-kit are documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-pre.8] — 2026-05-18 (/vibe-start skill + SessionStart hook)
+
+Building on pre.7's "CLAUDE.md tells Claude what to do," adding two deterministic mechanisms so the user doesn't have to rely on Claude reading instructions.
+
+### Added
+- **`/vibe-start` skill** (`skill/vibe-start/SKILL.md`): on-demand deterministic session-start ritual. Runs pre-flight check, loads learnings, checks Taskmaster, lists recent designs/CEO plans/handoffs, surfaces KNOWN_GOTCHAS, ends with "What do you want to work on?". User can invoke explicitly via `/vibe-start` from a chat.
+- **SessionStart hook** (`hooks/vibe-kit-session-start.sh`): runs automatically at the start of every Claude Code session if wired into `~/.claude/settings.json`. Detects `.vibe-kit-version` and emits a compact briefing (~15 lines) injected into Claude's session context. Silent no-op on non-retrofitted repos.
+- **install.sh refactor:** now loops over `skill/*/SKILL.md` and installs each as a Claude Code skill. Also installs the SessionStart hook to `~/.claude/hooks/` AND offers an opt-in wiring step (`./bin/install.sh --enable-hook`) that updates `~/.claude/settings.json` via `jq` with a backup.
+
+### Layout change
+- `skill/SKILL.md` → `skill/vibe-retrofit/SKILL.md` (per-skill subdirectories now). install.sh still recognizes the legacy `skill/SKILL.md` path for back-compat with older installs.
+- New `hooks/` directory at repo root.
+
+### Migration
+Existing users: `cd ~/dev/vibe-kit && git pull && ./bin/install.sh` picks up both new skills + installs the hook (without wiring it). Wire the hook in with `./bin/install.sh --enable-hook` (one-time, requires `jq`).
+
+### What this closes
+This is the deterministic + automatic answer to the muscle that pre.7 added. The pre.7 CLAUDE.md said "do the session-start ritual"; the pre.8 SessionStart hook actually runs the ritual without typing anything. Together: Claude has zero excuse to skip context loading on retrofitted repos.
+
 ## [0.1.0-pre.7] — 2026-05-18 (CLAUDE.md actually instructs Claude — the missing muscle)
 
 User flagged the real gap after canary retrofit: "we built the bones for context + task tracking but didn't actually give the AI's vibe coding better context or task tracking." The retrofit was producing static artifacts (gstack-learnings.md, symlinks) but the CLAUDE.md block didn't tell Claude to USE them. Session behavior didn't change.

@@ -58,14 +58,33 @@ EOF
 chmod +x "$WRAPPER"
 _ok "Wrote wrapper at $WRAPPER"
 
-# ── Register skill ──────────────────────────────────────────────────────────
-if [ -f "$VIBE_KIT_ROOT/skill/SKILL.md" ]; then
-  _log "Registering skill at ${SKILL_DIR}…"
-  mkdir -p "$SKILL_DIR"
-  cp "$VIBE_KIT_ROOT/skill/SKILL.md" "$SKILL_DIR/SKILL.md"
-  _ok "Skill registered. Available as /vibe-retrofit in Claude Code."
-else
-  _warn "skill/SKILL.md not found. Skill not registered (only bash CLI available)."
+# ── Register skills ─────────────────────────────────────────────────────────
+# Each subdirectory of skill/ contains a SKILL.md and installs as a separate
+# Claude Code skill named for the directory. Layout per gstack convention:
+#   skill/<name>/SKILL.md  →  ~/.claude/skills/<name>/SKILL.md  →  /<name>
+SKILLS_ROOT="$HOME/.claude/skills"
+SKILL_DIRS=""
+if [ -d "$VIBE_KIT_ROOT/skill" ]; then
+  for d in "$VIBE_KIT_ROOT/skill"/*/; do
+    [ -f "$d/SKILL.md" ] || continue
+    name="$(basename "$d")"
+    target="$SKILLS_ROOT/$name"
+    _log "Registering skill /${name}…"
+    mkdir -p "$target"
+    cp "$d/SKILL.md" "$target/SKILL.md"
+    _ok "Skill /${name} registered at ${target}/SKILL.md"
+    SKILL_DIRS="$SKILL_DIRS /${name}"
+  done
+fi
+# Legacy back-compat: if the old skill/SKILL.md still exists at the top level
+# (pre-pre.8 layout), install it as /vibe-retrofit.
+if [ -f "$VIBE_KIT_ROOT/skill/SKILL.md" ] && [ ! -d "$SKILLS_ROOT/vibe-retrofit" ]; then
+  _warn "Legacy skill/SKILL.md found — installing as /vibe-retrofit for back-compat."
+  mkdir -p "$SKILLS_ROOT/vibe-retrofit"
+  cp "$VIBE_KIT_ROOT/skill/SKILL.md" "$SKILLS_ROOT/vibe-retrofit/SKILL.md"
+fi
+if [ -z "$SKILL_DIRS" ] && [ ! -f "$VIBE_KIT_ROOT/skill/SKILL.md" ]; then
+  _warn "No skills found under skill/. Only the bash CLI is installed."
 fi
 
 # ── Verify wrapper resolution ───────────────────────────────────────────────
@@ -78,6 +97,79 @@ case ":$PATH:" in
     _warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
     ;;
 esac
+
+# ── SessionStart hook (optional, opt-in) ────────────────────────────────────
+# Claude Code can run a shell hook at the start of every session. We can ship
+# one that detects retrofitted repos (`.vibe-kit-version` present) and emits a
+# session-start briefing automatically — so Claude has the context loaded
+# without the user typing /vibe-start. Hook lives at:
+#   ~/.claude/hooks/vibe-kit-session-start.sh
+# Wiring into ~/.claude/settings.json is a separate, explicit opt-in.
+HOOK_SRC="$VIBE_KIT_ROOT/hooks/vibe-kit-session-start.sh"
+HOOK_DIR="$HOME/.claude/hooks"
+HOOK_DEST="$HOOK_DIR/vibe-kit-session-start.sh"
+SETTINGS="$HOME/.claude/settings.json"
+
+if [ -f "$HOOK_SRC" ]; then
+  mkdir -p "$HOOK_DIR"
+  cp "$HOOK_SRC" "$HOOK_DEST"
+  chmod +x "$HOOK_DEST"
+  _ok "SessionStart hook installed at $HOOK_DEST (not wired into settings.json yet)"
+
+  # Check if hook is already wired into settings.json
+  already_wired="no"
+  if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
+    if jq -e --arg p "$HOOK_DEST" \
+        '.hooks.SessionStart // [] | any(.hooks[]?.command == $p)' \
+        "$SETTINGS" >/dev/null 2>&1; then
+      already_wired="yes"
+    fi
+  fi
+
+  if [ "$already_wired" = "yes" ]; then
+    _ok "SessionStart hook already wired in $SETTINGS."
+  else
+    _log ""
+    _log "OPTIONAL: wire the SessionStart hook into ~/.claude/settings.json so"
+    _log "Claude auto-loads vibe-kit context when starting a session on a"
+    _log "retrofitted repo (no need to type /vibe-start each time)."
+    _log ""
+    _log "To enable, run:"
+    _log "  bash $VIBE_KIT_ROOT/bin/install.sh --enable-hook"
+    _log "(Or wire it manually — see the hook file for the config snippet.)"
+  fi
+fi
+
+# Handle --enable-hook flag if passed (idempotent)
+if [ "${1:-}" = "--enable-hook" ]; then
+  if [ ! -f "$HOOK_DEST" ]; then
+    _die "Hook not installed yet. Run install.sh without --enable-hook first."
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    _die "jq required to safely edit settings.json. Install jq and retry."
+  fi
+  mkdir -p "$HOME/.claude"
+  # Initialize settings.json if missing
+  [ -f "$SETTINGS" ] || echo "{}" > "$SETTINGS"
+  # Backup
+  cp "$SETTINGS" "$SETTINGS.backup.$(date +%Y%m%d-%H%M%S)"
+  _log "Backed up $SETTINGS"
+  # Add the hook entry idempotently
+  tmp="$(mktemp)"
+  jq --arg p "$HOOK_DEST" '
+    .hooks = (.hooks // {}) |
+    .hooks.SessionStart = (.hooks.SessionStart // []) |
+    if (.hooks.SessionStart | any(.hooks[]?.command == $p))
+    then .
+    else .hooks.SessionStart += [{
+      "matcher": "startup",
+      "hooks": [{"type": "command", "command": $p}]
+    }]
+    end
+  ' "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
+  _ok "SessionStart hook wired into $SETTINGS. Active in next Claude Code session."
+  exit 0
+fi
 
 # ── Summary ─────────────────────────────────────────────────────────────────
 _log ""
