@@ -1,0 +1,56 @@
+<!-- vibe-kit-retrofit:v0.1 added={{retrofitted_at}} block-hash-tracked -->
+## vibe-kit additions
+
+This block is managed by `vibe-retrofit`. Custom edits inside will be overwritten on re-run unless you move them above this marker or use `--force` (see CONTRIBUTING.md in vibe-kit).
+
+## Commands
+
+Run from project root:
+
+- Install: `{{install_command}}`
+- Dev server: `{{dev_server_command}}`
+- Typecheck: `{{typecheck_command}}`
+- Tests: `{{test_command}}`
+- Single test: see `{{test_command}}` docs for path-targeted invocation
+
+(If any of these are blank, fill them in. They were not detected during discovery — meaning the project has no `package.json` script, `Makefile` target, or README mention that matched. Filling them in is the highest-leverage edit you can make in this file.)
+
+## Skill routing
+
+When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.
+
+Key routing rules:
+- Product ideas / brainstorming → invoke `/office-hours`
+- Strategy / scope → invoke `/plan-ceo-review`
+- Architecture → invoke `/plan-eng-review`
+- Full review pipeline → invoke `/autoplan`
+- Bugs / errors → invoke `/investigate`
+- QA / testing site behavior → invoke `/qa` or `/qa-only`
+- Code review / diff check → invoke `/review`
+- Visual polish → invoke `/design-review`
+- Ship / deploy / PR → invoke `/ship` or `/land-and-deploy`
+- Save progress → invoke `/context-save`
+- Resume context → invoke `/context-restore`
+
+## Done means
+
+A task is NOT done until:
+- Relevant tests pass (`{{test_command}}`)
+- Typecheck passes (`{{typecheck_command}}`)
+- For UI changes: browser-tested, screenshot taken, console clean
+- Diff reviewed (use `/review` for non-trivial diffs)
+- No unrelated files changed
+- Edge cases listed, remaining risks disclosed
+
+"Should work" is not a signal. Run the check yourself.
+
+## Do not
+
+- Do not suppress errors to make tests pass.
+- Do not change unrelated files.
+- Do not rewrite architecture unless explicitly requested.
+- Do not use outdated library knowledge. Use Context7 for current third-party APIs (see Context7 section below).
+- Do not add new dependencies without asking.
+- Do not declare completion until verification passes or failure is explained.
+
+<!-- /vibe-kit-retrofit:v0.1 -->

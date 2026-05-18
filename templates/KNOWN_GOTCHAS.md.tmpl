@@ -1,0 +1,23 @@
+# Known gotchas — {{project_name}}
+
+This file logs:
+1. Bugs the vibe-kit verification gate caught before they reached commit
+2. Mistakes Claude (or any other agent) made on this codebase twice or more
+3. Quirks of this project that an outside engineer would not guess from the code
+
+Format: one-line title + 1–3 lines of context. Date stamp optional but recommended.
+
+## Caught before commit
+
+(Add entries as the gate catches things. Goal at 4 weeks: 5+ entries.)
+
+Example format:
+- **2026-05-20 — `Date.parse` returns NaN for our ISO strings without explicit timezone** (caught by typecheck after Claude added a `.getTime()` call). Fix: always use `new Date(iso).getTime()` with our `parseStrictIso()` helper at `src/utils/date.ts:14`.
+
+## Recurring agent mistakes
+
+(Anything you've had to correct twice. Run `/learn` to capture each one structurally; this is the human-readable surface.)
+
+## Project quirks
+
+(Things an outside engineer would not guess. Auth flow oddities, env requirements, third-party API quirks, internal-only conventions.)

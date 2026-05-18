@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  bats:
+    name: bats (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install bats (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y bats jq
+
+      - name: Install bats (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install bats-core jq
+
+      - name: Show versions
+        run: |
+          bash --version | head -1
+          bats --version
+          jq --version
+          git --version
+
+      - name: Set git identity (test fixtures need one)
+        run: |
+          git config --global user.email "ci@vibe-kit.test"
+          git config --global user.name "vibe-kit CI"
+
+      - name: Run bats suite
+        run: bats --tap test/

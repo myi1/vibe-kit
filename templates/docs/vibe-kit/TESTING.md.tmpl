@@ -1,0 +1,34 @@
+# Testing — {{project_name}}
+
+TODO scaffold. Fill in by reading 2-3 existing test files. The point is conventions, not theory.
+
+## Test command
+
+```
+{{test_command}}
+```
+
+## Detected test files
+
+{{test_file_count_block}}
+
+## Test layout
+
+Where do tests live? What's the naming convention? (`*.test.ts`? `_spec.rb`? `tests/` mirroring `src/`?)
+
+## What we mock vs. what we hit for real
+
+- Mocked: (network calls? DB? filesystem?)
+- Real: (in-memory DB? local test fixtures? hits actual APIs against test accounts?)
+
+## Patterns we use
+
+Pick the most-used test pattern in this repo and describe it in 3-5 lines so future-you doesn't have to re-derive it.
+
+## What's hard to test
+
+Be honest. Components that are awkward to test (UI state machines, background jobs, async event loops) tend to be where bugs ship. Name them so the verification gate forces extra scrutiny.
+
+## Coverage philosophy
+
+Are you targeting 100% line coverage? Just unit tests? Are integration tests valued more than unit tests? State your taste so future-you doesn't drift.

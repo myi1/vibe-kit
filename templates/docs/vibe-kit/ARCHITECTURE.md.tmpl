@@ -1,0 +1,33 @@
+# Architecture — {{project_name}}
+
+TODO scaffold. Fill in by skimming the code yourself.
+
+{{existing_docs_pointer_block}}
+
+## High-level diagram
+
+Draw an ASCII diagram showing components and their relationships. If this is a web app, show client → API → DB → external services. If this is a library, show consumer → public API → internal modules → deps. If this is a CLI, show argv → parser → subcommand handlers → effects.
+
+```
+(replace with your diagram)
+```
+
+## Data flow
+
+Pick one important user action (e.g., "user submits a form" / "user runs the X command") and trace it end-to-end. Where does input come from? What transforms it? Where does it land? What can go wrong at each step?
+
+## State
+
+What is stateful in this system? Where? (Database tables, Redis caches, files on disk, in-memory caches, browser localStorage, external system state.)
+
+## Coupling
+
+Which modules are most coupled to each other? Is the coupling justified? Where would a refactor be highest leverage?
+
+## Scaling characteristics
+
+What breaks first under 10x current load? Under 100x? (If you don't know yet, say so — don't pretend.)
+
+## Reversibility
+
+If you had to undo this system, which decisions are one-way doors? (Schema migrations, third-party integrations, public API surface, customer data.)

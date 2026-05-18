@@ -1,0 +1,920 @@
+#!/usr/bin/env bash
+# vibe-retrofit — rescue your messy AI-coded repos.
+# See: https://github.com/myi1/vibe-kit
+# Bash 3.2+ compatible (Apple stock bash works).
+
+set -eu
+
+VIBE_KIT_VERSION="0.1.0-pre"
+
+# Resolve VIBE_KIT_ROOT: directory containing this script's parent.
+# Handles both direct invocation (./bin/vibe-retrofit) and wrapper invocation
+# (where install.sh wrote a wrapper that exec's this script with absolute path).
+_resolve_self() {
+  local src="${BASH_SOURCE[0]}"
+  while [ -h "$src" ]; do
+    local dir
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    case "$src" in
+      /*) ;;
+      *) src="$dir/$src" ;;
+    esac
+  done
+  echo "$(cd -P "$(dirname "$src")/.." && pwd)"
+}
+VIBE_KIT_ROOT="${VIBE_KIT_ROOT:-$(_resolve_self)}"
+
+# ────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ────────────────────────────────────────────────────────────────────────────
+
+# Colors (only when stdout is a tty). Bash 3.2 compat: plain assignment, no
+# associative arrays.
+if [ -t 1 ] && [ "${NO_COLOR:-}" = "" ]; then
+  C_RESET="\033[0m"
+  C_BOLD="\033[1m"
+  C_DIM="\033[2m"
+  C_RED="\033[31m"
+  C_GREEN="\033[32m"
+  C_YELLOW="\033[33m"
+  C_BLUE="\033[34m"
+  C_CYAN="\033[36m"
+else
+  C_RESET=""; C_BOLD=""; C_DIM=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_BLUE=""; C_CYAN=""
+fi
+
+_log()   { printf "%b\n" "$*" >&2; }
+_info()  { printf "%b%s%b %s\n" "$C_CYAN" "ℹ" "$C_RESET" "$*" >&2; }
+_ok()    { printf "%b%s%b %s\n" "$C_GREEN" "✓" "$C_RESET" "$*" >&2; }
+_warn()  { printf "%b%s%b %s\n" "$C_YELLOW" "!" "$C_RESET" "$*" >&2; }
+_die()   { printf "%b%s%b %s\n" "$C_RED" "✗" "$C_RESET" "$*" >&2; exit 1; }
+
+# Cross-platform SHA-256. Picks shasum (BSD/macOS) or sha256sum (Linux).
+# Reads from stdin or file path. Outputs 64-hex-char hash, nothing else.
+_SHA256_CMD=""
+_resolve_sha256() {
+  if command -v shasum >/dev/null 2>&1; then
+    _SHA256_CMD="shasum -a 256"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    _SHA256_CMD="sha256sum"
+  else
+    _die "Neither 'shasum' nor 'sha256sum' found. Install one (macOS ships shasum, Linux ships sha256sum)."
+  fi
+}
+_sha256() {
+  [ -z "$_SHA256_CMD" ] && _resolve_sha256
+  if [ -n "${1:-}" ] && [ -f "$1" ]; then
+    $_SHA256_CMD < "$1" | awk '{print $1}'
+  else
+    $_SHA256_CMD | awk '{print $1}'
+  fi
+}
+
+_check_git_repo() {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || _die "Not inside a git repository. Run from your project root."
+}
+
+# Refuse to proceed if any tracked target file has uncommitted changes.
+# Args: list of paths to check. Skips paths that don't exist.
+_check_clean_targets() {
+  local dirty=""
+  local p
+  for p in "$@"; do
+    [ -e "$p" ] || continue
+    if ! git diff --quiet -- "$p" 2>/dev/null \
+       || ! git diff --cached --quiet -- "$p" 2>/dev/null; then
+      dirty="$dirty $p"
+    fi
+  done
+  if [ -n "$dirty" ]; then
+    _die "Uncommitted changes in:$dirty
+Commit or stash these first. vibe-retrofit refuses to interleave with in-progress edits."
+  fi
+}
+
+_check_command() {
+  command -v "$1" >/dev/null 2>&1 \
+    || _die "Required command '$1' not found. Install it and retry."
+}
+
+# Discovery report paths. Override with --report-path for non-personal repos.
+_report_md_path()   { echo "${REPORT_PATH_OVERRIDE:-$PWD}/.vibe-kit-discovery.md"; }
+_report_json_path() { echo "${REPORT_PATH_OVERRIDE:-$PWD}/.vibe-kit-discovery.json"; }
+_classification_path() { echo "${REPORT_PATH_OVERRIDE:-$PWD}/.vibe-kit-classification.json"; }
+
+# ────────────────────────────────────────────────────────────────────────────
+# cmd: discover
+# ────────────────────────────────────────────────────────────────────────────
+cmd_discover() {
+  _check_git_repo
+
+  local md_path; md_path="$(_report_md_path)"
+  local json_path; json_path="$(_report_json_path)"
+
+  _info "Running discovery on $(basename "$(pwd)")…"
+
+  # 1. Existing agent-context files
+  local agent_files=""
+  local f
+  for f in CLAUDE.md AGENTS.md .cursorrules .windsurfrules .clinerules ai-instructions.md; do
+    [ -f "$f" ] && agent_files="$agent_files $f"
+  done
+
+  # 2. Existing plan/spec docs (glob via git ls-files for .gitignore respect)
+  local plan_docs=""
+  if git ls-files >/dev/null 2>&1; then
+    plan_docs="$(git ls-files -- \
+      'docs/**/*.md' 'docs/*.md' \
+      'plans/**/*.md' 'plans/*.md' \
+      'specs/**/*.md' 'specs/*.md' \
+      'thoughts/**/*.md' 'thoughts/*.md' \
+      'design/**/*.md' 'design/*.md' \
+      2>/dev/null | grep -vE '^(README|CHANGELOG|LICENSE|CODE_OF_CONDUCT|CONTRIBUTING)\.md$' || true)"
+    # Also catch root-level Markdown that isn't standard
+    local root_md
+    root_md="$(git ls-files -- '*.md' 2>/dev/null \
+      | grep -vE '/' \
+      | grep -vE '^(README|CHANGELOG|LICENSE|CODE_OF_CONDUCT|CONTRIBUTING)\.md$' || true)"
+    if [ -n "$root_md" ]; then
+      plan_docs="$plan_docs
+$root_md"
+    fi
+  fi
+
+  # 3. TODO scatter via git grep (respects .gitignore)
+  local todo_raw=""
+  todo_raw="$(git grep -n -E 'TODO|FIXME|XXX|HACK' -- \
+    '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' \
+    '*.py' '*.rs' '*.go' '*.rb' '*.java' '*.kt' '*.swift' '*.c' '*.h' '*.cpp' '*.hpp' \
+    '*.md' '*.sh' '*.bash' '*.zsh' \
+    2>/dev/null || true)"
+  local todo_count
+  todo_count="$(printf '%s' "$todo_raw" | grep -c . || true)"
+
+  # 4. Third-party imports — read top deps from manifest files
+  local libs=""
+  if [ -f package.json ] && command -v jq >/dev/null 2>&1; then
+    libs="$(jq -r '(.dependencies // {}) + (.devDependencies // {}) | keys[]?' package.json 2>/dev/null | head -20 || true)"
+  elif [ -f requirements.txt ]; then
+    libs="$(grep -v '^#' requirements.txt 2>/dev/null | sed -E 's/[<>=!~].*//' | head -20 || true)"
+  elif [ -f pyproject.toml ]; then
+    libs="$(grep -E '^[a-zA-Z0-9_-]+\s*=' pyproject.toml 2>/dev/null | head -20 | awk '{print $1}' || true)"
+  elif [ -f go.mod ]; then
+    libs="$(awk '/^require/,/^\)/ {print $1}' go.mod 2>/dev/null | grep -v 'require\|^)' | head -20 || true)"
+  elif [ -f Cargo.toml ]; then
+    libs="$(awk '/^\[dependencies\]/,/^\[/' Cargo.toml 2>/dev/null | grep '=' | awk -F'=' '{print $1}' | tr -d ' "' | head -20 || true)"
+  elif [ -f Gemfile ]; then
+    libs="$(grep '^gem ' Gemfile 2>/dev/null | awk '{print $2}' | tr -d "'\"," | head -20 || true)"
+  fi
+
+  # 5. Inferred commands
+  local cmd_test="" cmd_typecheck="" cmd_dev="" cmd_install=""
+  if [ -f package.json ] && command -v jq >/dev/null 2>&1; then
+    cmd_test="$(jq -r '.scripts.test // empty' package.json 2>/dev/null)"
+    cmd_typecheck="$(jq -r '.scripts.typecheck // .scripts["type-check"] // empty' package.json 2>/dev/null)"
+    cmd_dev="$(jq -r '.scripts.dev // .scripts.start // empty' package.json 2>/dev/null)"
+    cmd_install="npm install"
+    [ -f yarn.lock ] && cmd_install="yarn"
+    [ -f pnpm-lock.yaml ] && cmd_install="pnpm install"
+    [ -f bun.lockb ] || [ -f bun.lock ] && cmd_install="bun install"
+  fi
+  [ -z "$cmd_test" ] && [ -f Makefile ] && grep -qE '^test:' Makefile && cmd_test="make test"
+  [ -z "$cmd_test" ] && [ -f pytest.ini -o -f pyproject.toml ] && cmd_test="pytest"
+  [ -z "$cmd_test" ] && [ -f Gemfile ] && cmd_test="bundle exec rspec"
+  [ -z "$cmd_test" ] && [ -f go.mod ] && cmd_test="go test ./..."
+  [ -z "$cmd_test" ] && [ -f Cargo.toml ] && cmd_test="cargo test"
+
+  # 6. Existing Taskmaster state
+  local has_taskmaster="no"
+  [ -d .taskmaster ] && has_taskmaster="yes"
+  local has_todos_md="no"
+  [ -f TODOS.md ] || [ -f TODO.md ] || [ -f BACKLOG.md ] && has_todos_md="yes"
+
+  # ── Build JSON report (machine-readable for the skill) ──────────────────
+  # Build a JSON document with jq for safety. Convert newline-separated lists
+  # to JSON arrays.
+  local _jq_input
+  _jq_input="$(jq -n \
+    --arg ver "$VIBE_KIT_VERSION" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg cwd "$PWD" \
+    --arg agent_files "$agent_files" \
+    --arg plan_docs "$plan_docs" \
+    --arg libs "$libs" \
+    --arg todo_count "$todo_count" \
+    --arg cmd_test "$cmd_test" \
+    --arg cmd_typecheck "$cmd_typecheck" \
+    --arg cmd_dev "$cmd_dev" \
+    --arg cmd_install "$cmd_install" \
+    --arg has_taskmaster "$has_taskmaster" \
+    --arg has_todos_md "$has_todos_md" \
+    --arg todo_raw "$todo_raw" \
+    '{
+      vibe_kit_version: $ver,
+      generated_at: $ts,
+      project_dir: $cwd,
+      agent_context_files: ($agent_files | split(" ") | map(select(length > 0))),
+      plan_docs: ($plan_docs | split("\n") | map(select(length > 0))),
+      libraries: ($libs | split("\n") | map(select(length > 0))),
+      todo_count: ($todo_count | tonumber? // 0),
+      todos: ($todo_raw | split("\n") | map(select(length > 0))),
+      commands: {
+        install: $cmd_install,
+        test: $cmd_test,
+        typecheck: $cmd_typecheck,
+        dev: $cmd_dev
+      },
+      existing_state: {
+        taskmaster: $has_taskmaster,
+        todos_md: $has_todos_md
+      }
+    }')"
+
+  printf '%s\n' "$_jq_input" > "$json_path"
+
+  # ── Build Markdown report (human-readable) ──────────────────────────────
+  {
+    echo "# Discovery report — $(basename "$(pwd)")"
+    echo ""
+    echo "Generated by \`vibe-retrofit discover\` (v${VIBE_KIT_VERSION}) at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo ""
+    echo "## Agent-context files found"
+    echo ""
+    if [ -n "$agent_files" ]; then
+      for f in $agent_files; do echo "- \`$f\`"; done
+    else
+      echo "_None — fresh ground for CLAUDE.md._"
+    fi
+    echo ""
+    echo "## Existing plan / spec docs"
+    echo ""
+    if [ -n "$plan_docs" ]; then
+      printf '%s\n' "$plan_docs" | while IFS= read -r line; do
+        [ -n "$line" ] && echo "- \`$line\`"
+      done
+    else
+      echo "_None found in docs/, plans/, specs/, thoughts/, design/, or root._"
+    fi
+    echo ""
+    echo "## TODO scatter ($todo_count matches)"
+    echo ""
+    if [ "$todo_count" -gt 0 ]; then
+      echo '```'
+      printf '%s\n' "$todo_raw" | head -50
+      if [ "$todo_count" -gt 50 ]; then
+        echo "... and $((todo_count - 50)) more"
+      fi
+      echo '```'
+    else
+      echo "_No TODO/FIXME/XXX/HACK comments found._"
+    fi
+    echo ""
+    echo "## Detected third-party libraries (top 20)"
+    echo ""
+    if [ -n "$libs" ]; then
+      printf '%s\n' "$libs" | while IFS= read -r lib; do
+        [ -n "$lib" ] && echo "- $lib"
+      done
+    else
+      echo "_No package.json / requirements.txt / go.mod / Cargo.toml / Gemfile detected._"
+    fi
+    echo ""
+    echo "## Inferred commands"
+    echo ""
+    echo "- **Install:** \`${cmd_install:-(not detected)}\`"
+    echo "- **Test:** \`${cmd_test:-(not detected)}\`"
+    echo "- **Typecheck:** \`${cmd_typecheck:-(not detected)}\`"
+    echo "- **Dev server:** \`${cmd_dev:-(not detected)}\`"
+    echo ""
+    echo "## Existing task-tracking state"
+    echo ""
+    echo "- Taskmaster initialized: **$has_taskmaster**"
+    echo "- TODOS.md / TODO.md / BACKLOG.md present: **$has_todos_md**"
+    echo ""
+    echo "---"
+    echo ""
+    echo "_Read this report before running \`vibe-retrofit tier 1/2/3\`. It is the input that distinguishes a smart retrofit from a dumb one._"
+  } > "$md_path"
+
+  # ── Colored stdout summary (the user's "I read this" moment) ────────────
+  printf "\n"
+  printf "%b┌─ Discovery summary ──────────────────────────────────────┐%b\n" "$C_BOLD" "$C_RESET"
+  printf "  %bProject:%b   %s\n" "$C_DIM" "$C_RESET" "$(basename "$(pwd)")"
+  printf "  %bAgent files:%b %s%s%b\n" "$C_DIM" "$C_RESET" "$C_CYAN" \
+    "$(if [ -n "$agent_files" ]; then echo "$agent_files" | wc -w | tr -d ' '; else echo 0; fi)" "$C_RESET"
+  printf "  %bPlan docs:%b %s%s%b\n" "$C_DIM" "$C_RESET" "$C_CYAN" \
+    "$(printf '%s' "$plan_docs" | grep -c . || echo 0)" "$C_RESET"
+  printf "  %bTODOs:%b     %s%s%b\n" "$C_DIM" "$C_RESET" "$C_YELLOW" "$todo_count" "$C_RESET"
+  printf "  %bLibraries:%b %s%s%b\n" "$C_DIM" "$C_RESET" "$C_CYAN" \
+    "$(printf '%s' "$libs" | grep -c . || echo 0)" "$C_RESET"
+  printf "  %bTaskmaster:%b %s%s%b   %bTODOS.md:%b %s%s%b\n" "$C_DIM" "$C_RESET" \
+    "$(if [ "$has_taskmaster" = "yes" ]; then echo "$C_GREEN"; else echo "$C_DIM"; fi)" "$has_taskmaster" "$C_RESET" \
+    "$C_DIM" "$C_RESET" \
+    "$(if [ "$has_todos_md" = "yes" ]; then echo "$C_GREEN"; else echo "$C_DIM"; fi)" "$has_todos_md" "$C_RESET"
+  printf "%b└──────────────────────────────────────────────────────────┘%b\n\n" "$C_BOLD" "$C_RESET"
+
+  _ok "Wrote $md_path"
+  _ok "Wrote $json_path"
+  _info "Read the markdown report. Then run \`vibe-retrofit tier 1\` (or tier 2 / tier 3)."
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# cmd: merge-claude-md
+# Append-only delimited block update. Honors --dry-run, --force.
+# Reads classification from .vibe-kit-classification.json (if skill ran);
+# otherwise uses the raw template with discovery commands substituted.
+# ────────────────────────────────────────────────────────────────────────────
+cmd_merge_claude_md() {
+  _check_git_repo
+  local dry_run=0 force=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry_run=1 ;;
+      --force)   force=1 ;;
+      *) _die "Unknown flag for merge-claude-md: $1" ;;
+    esac
+    shift
+  done
+
+  local tmpl="$VIBE_KIT_ROOT/templates/CLAUDE.md.tmpl"
+  [ -f "$tmpl" ] || _die "Template not found: $tmpl"
+
+  [ "$dry_run" -eq 0 ] && _check_clean_targets CLAUDE.md
+
+  local json_path; json_path="$(_report_json_path)"
+  [ -f "$json_path" ] || _die "No discovery report at $json_path. Run 'vibe-retrofit discover' first."
+
+  # Pull inferred commands from the discovery JSON
+  local cmd_test cmd_typecheck cmd_dev cmd_install
+  cmd_test="$(jq -r '.commands.test // "(not detected — fill in)"' "$json_path")"
+  cmd_typecheck="$(jq -r '.commands.typecheck // "(not detected — fill in)"' "$json_path")"
+  cmd_dev="$(jq -r '.commands.dev // "(not detected — fill in)"' "$json_path")"
+  cmd_install="$(jq -r '.commands.install // "(not detected — fill in)"' "$json_path")"
+
+  # Build context7 library allowlist
+  local libs_block
+  libs_block="$(jq -r '.libraries | if length == 0 then "_No third-party libraries detected._" else map("- " + .) | join("\n") end' "$json_path")"
+
+  # Render the template by simple variable substitution.
+  # Bash 3.2 compat: use sed -e for each variable.
+  local rendered
+  rendered="$(cat "$tmpl")"
+  rendered="${rendered//\{\{retrofitted_at\}\}/$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+  rendered="${rendered//\{\{install_command\}\}/$cmd_install}"
+  rendered="${rendered//\{\{test_command\}\}/$cmd_test}"
+  rendered="${rendered//\{\{typecheck_command\}\}/$cmd_typecheck}"
+  rendered="${rendered//\{\{dev_server_command\}\}/$cmd_dev}"
+
+  # Detect existing marker block in CLAUDE.md
+  local start_marker="<!-- vibe-kit-retrofit:v0.1 "
+  local end_marker="<!-- /vibe-kit-retrofit:v0.1 -->"
+
+  local has_block=0
+  if [ -f CLAUDE.md ] && grep -qF "$start_marker" CLAUDE.md 2>/dev/null; then
+    has_block=1
+  fi
+
+  if [ "$has_block" -eq 1 ] && [ "$force" -eq 0 ]; then
+    # Check block hash against .vibe-kit-version (if present)
+    if [ -f .vibe-kit-version ] && command -v jq >/dev/null 2>&1; then
+      local stored_hash
+      stored_hash="$(jq -r '.claude_md_block_hash // ""' .vibe-kit-version 2>/dev/null)"
+      if [ -n "$stored_hash" ]; then
+        local current_block
+        current_block="$(awk -v start="$start_marker" -v end="$end_marker" '
+          index($0, start) {p=1}
+          p {print}
+          index($0, end) {exit}
+        ' CLAUDE.md)"
+        local current_hash
+        current_hash="$(printf '%s' "$current_block" | _sha256)"
+        if [ "$current_hash" != "$stored_hash" ]; then
+          _die "Block hash mismatch — you've edited the vibe-kit block in CLAUDE.md.
+Run with --force to overwrite, or move your custom edits ABOVE the marker block.
+  Stored hash:  $stored_hash
+  Current hash: $current_hash"
+        fi
+      fi
+    fi
+  fi
+
+  if [ "$dry_run" -eq 1 ]; then
+    _info "DRY RUN: would update CLAUDE.md as follows:"
+    if [ "$has_block" -eq 1 ]; then
+      _info "  → replace existing marker block (preserving content above + below)"
+    else
+      _info "  → append marker block at end of file"
+    fi
+    printf "\n%b--- preview of new block ---%b\n" "$C_DIM" "$C_RESET"
+    printf '%s\n' "$rendered" | head -30
+    printf "%b... (full block is %s lines)%b\n" "$C_DIM" "$(printf '%s' "$rendered" | wc -l)" "$C_RESET"
+    return 0
+  fi
+
+  if [ "$has_block" -eq 1 ]; then
+    # Replace the existing block. awk's -v doesn't support multi-line values,
+    # so write the new block to a tempfile and have awk read it inline.
+    local tmpfile new_block_file
+    tmpfile="$(mktemp)"
+    new_block_file="$(mktemp)"
+    printf '%s\n' "$rendered" > "$new_block_file"
+    awk -v start="$start_marker" -v end="$end_marker" -v new_block_file="$new_block_file" '
+      BEGIN { in_block=0; printed_new=0 }
+      index($0, start) {
+        if (!printed_new) {
+          while ((getline line < new_block_file) > 0) print line
+          close(new_block_file)
+          printed_new=1
+        }
+        in_block=1
+        next
+      }
+      in_block && index($0, end) {
+        in_block=0
+        next
+      }
+      !in_block { print }
+    ' CLAUDE.md > "$tmpfile"
+    mv "$tmpfile" CLAUDE.md
+    rm -f "$new_block_file"
+    _ok "Replaced existing vibe-kit block in CLAUDE.md."
+  elif [ -f CLAUDE.md ]; then
+    # Append at end of file.
+    {
+      echo ""
+      printf '%s\n' "$rendered"
+    } >> CLAUDE.md
+    _ok "Appended vibe-kit block at end of CLAUDE.md."
+  else
+    # Create from template.
+    printf '%s\n' "$rendered" > CLAUDE.md
+    _ok "Created CLAUDE.md from template."
+  fi
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# cmd: write-version
+# Writes .vibe-kit-version JSON with template hashes + block hash.
+# ────────────────────────────────────────────────────────────────────────────
+cmd_write_version() {
+  local dry_run=0 tier=1
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry_run=1 ;;
+      --tier)    shift; tier="$1" ;;
+      *) _die "Unknown flag for write-version: $1" ;;
+    esac
+    shift
+  done
+
+  local tmpl_dir="$VIBE_KIT_ROOT/templates"
+  local rules_dir="$VIBE_KIT_ROOT/rules"
+  local start_marker="<!-- vibe-kit-retrofit:v0.1 "
+  local end_marker="<!-- /vibe-kit-retrofit:v0.1 -->"
+
+  # Hash each tracked template + rule file
+  local th_claude th_context7 th_taskmaster th_verification
+  th_claude="$(_sha256 "$tmpl_dir/CLAUDE.md.tmpl")"
+  th_context7="$(_sha256 "$rules_dir/context7.md")"
+  th_taskmaster="$(_sha256 "$rules_dir/taskmaster.md")"
+  th_verification="$(_sha256 "$rules_dir/verification-checklist.md")"
+
+  # Hash the CLAUDE.md block content (if present)
+  local block_hash=""
+  if [ -f CLAUDE.md ] && grep -qF "$start_marker" CLAUDE.md 2>/dev/null; then
+    local block_content
+    block_content="$(awk -v start="$start_marker" -v end="$end_marker" '
+      index($0, start) {p=1}
+      p {print}
+      index($0, end) {exit}
+    ' CLAUDE.md)"
+    block_hash="$(printf '%s' "$block_content" | _sha256)"
+  fi
+
+  local out
+  out="$(jq -n \
+    --arg ver "$VIBE_KIT_VERSION" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --argjson tier "$tier" \
+    --arg th_claude "$th_claude" \
+    --arg th_context7 "$th_context7" \
+    --arg th_taskmaster "$th_taskmaster" \
+    --arg th_verification "$th_verification" \
+    --arg block_hash "$block_hash" \
+    '{
+      vibe_kit_version: $ver,
+      retrofitted_at: $ts,
+      tier: $tier,
+      template_hashes: {
+        "templates/CLAUDE.md.tmpl": $th_claude,
+        "rules/context7.md": $th_context7,
+        "rules/taskmaster.md": $th_taskmaster,
+        "rules/verification-checklist.md": $th_verification
+      },
+      claude_md_block_hash: $block_hash
+    }')"
+
+  if [ "$dry_run" -eq 1 ]; then
+    _info "DRY RUN: would write .vibe-kit-version:"
+    printf '%s\n' "$out"
+    return 0
+  fi
+
+  printf '%s\n' "$out" > .vibe-kit-version
+  _ok "Wrote .vibe-kit-version (tier $tier, block_hash=${block_hash:0:8}…)"
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# cmd: init-taskmaster
+# Tier-3 only. Calls task-master init + parse-prd. Requires API key.
+# ────────────────────────────────────────────────────────────────────────────
+cmd_init_taskmaster() {
+  local dry_run=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry_run=1 ;;
+      *) _die "Unknown flag for init-taskmaster: $1" ;;
+    esac
+    shift
+  done
+
+  _check_command task-master
+  _check_command jq
+
+  # API key check
+  if [ -z "${OPENAI_API_KEY:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${PERPLEXITY_API_KEY:-}" ]; then
+    _die "No LLM API key in env (OPENAI_API_KEY, ANTHROPIC_API_KEY, or PERPLEXITY_API_KEY).
+task-master parse-prd needs one. Set in your shell:
+  export OPENAI_API_KEY=...
+Then retry."
+  fi
+
+  local json_path; json_path="$(_report_json_path)"
+  [ -f "$json_path" ] || _die "No discovery report at $json_path. Run 'vibe-retrofit discover' first."
+
+  # Build synthetic PRD from discovered TODOs
+  local todo_count
+  todo_count="$(jq -r '.todo_count' "$json_path")"
+  if [ "$todo_count" = "0" ] || [ "$todo_count" = "null" ]; then
+    _warn "No TODOs discovered. Skipping Taskmaster import."
+    return 0
+  fi
+
+  local prd_file
+  prd_file="$(mktemp -t vibe-prd-XXXXXX).md"
+  {
+    echo "# Discovered work from $(basename "$(pwd)")"
+    echo ""
+    echo "Generated by \`vibe-retrofit init-taskmaster\` on $(date -u +%Y-%m-%dT%H:%M:%SZ)."
+    echo ""
+    echo "## Context"
+    echo ""
+    echo "This PRD lists discovered TODO / FIXME / XXX / HACK comments from the codebase. Each item already represents work that someone (often past-me) flagged as needing attention. Create one task per item, preserve file path provenance, set sensible priority, and DO NOT invent additional tasks not represented here."
+    echo ""
+    echo "## Tasks discovered"
+    echo ""
+    jq -r '.todos[] | "- " + .' "$json_path"
+  } > "$prd_file"
+
+  local task_count
+  task_count="$(jq -r '.todo_count' "$json_path")"
+
+  if [ "$dry_run" -eq 1 ]; then
+    _info "DRY RUN: would invoke task-master init + parse-prd."
+    _info "Synthetic PRD ($task_count tasks) at: $prd_file"
+    printf "\n%b--- PRD preview (first 20 lines) ---%b\n" "$C_DIM" "$C_RESET"
+    head -20 "$prd_file"
+    printf "%b... %s more lines%b\n" "$C_DIM" "$(($(wc -l < "$prd_file") - 20))" "$C_RESET"
+    return 0
+  fi
+
+  # Initialize Taskmaster (idempotent — won't overwrite if already initialized)
+  if [ ! -d .taskmaster ]; then
+    _info "Initializing Taskmaster…"
+    task-master init -y >&2
+  else
+    _info "Taskmaster already initialized — skipping init."
+  fi
+
+  # parse-prd produces tasks from the PRD
+  _info "Importing $task_count discovered TODOs via task-master parse-prd (estimated cost: ~\$$(awk "BEGIN{printf \"%.4f\", $task_count * 0.0001}"))…"
+  task-master parse-prd --input="$prd_file" --num-tasks="$task_count" --force >&2
+
+  rm -f "$prd_file"
+  _ok "Taskmaster initialized. Run \`task-master list\` to see imported tasks. Triage stale ones via \`task-master set-status <id> deferred\` or \`task-master remove-task --id=<id>\`."
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# cmd: rollback
+# Combines git revert + cleanup of out-of-commit state (.taskmaster/, docs/vibe-kit/)
+# ────────────────────────────────────────────────────────────────────────────
+cmd_rollback() {
+  local dry_run=0 commit_sha=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry_run=1 ;;
+      --commit)  shift; commit_sha="$1" ;;
+      *) _die "Unknown flag for rollback: $1" ;;
+    esac
+    shift
+  done
+
+  _check_git_repo
+
+  # Find the most recent vibe-kit-retrofit commit if not specified
+  if [ -z "$commit_sha" ]; then
+    commit_sha="$(git log --format='%H' --grep='vibe-kit-retrofit' -n 1 2>/dev/null || true)"
+    [ -z "$commit_sha" ] && commit_sha="$(git log --format='%H' --grep='vibe-retrofit' -n 1 2>/dev/null || true)"
+  fi
+
+  local will_revert_msg=""
+  if [ -n "$commit_sha" ]; then
+    will_revert_msg="$(git log --format='%h %s' -n 1 "$commit_sha")"
+  fi
+
+  if [ "$dry_run" -eq 1 ]; then
+    _info "DRY RUN: rollback plan:"
+    [ -n "$commit_sha" ] && _info "  → git revert $commit_sha   ($will_revert_msg)" || _warn "  → no vibe-retrofit commit found to revert"
+    [ -d .taskmaster ] && _info "  → rm -rf .taskmaster/   (created outside the revert commit)"
+    [ -d docs/vibe-kit ] && _info "  → rm -rf docs/vibe-kit/ (created outside the revert commit, if it was)"
+    [ -f .vibe-kit-discovery.md ] && _info "  → rm .vibe-kit-discovery.md"
+    [ -f .vibe-kit-discovery.json ] && _info "  → rm .vibe-kit-discovery.json"
+    [ -f .vibe-kit-classification.json ] && _info "  → rm .vibe-kit-classification.json"
+    return 0
+  fi
+
+  if [ -n "$commit_sha" ]; then
+    _info "Reverting $will_revert_msg…"
+    git revert --no-edit "$commit_sha" >&2
+    _ok "Revert committed."
+  else
+    _warn "No vibe-retrofit commit found. Skipping git revert."
+  fi
+
+  if [ -d .taskmaster ]; then
+    _info "Removing .taskmaster/ (created outside the retrofit commit)…"
+    rm -rf .taskmaster
+    _ok "Removed .taskmaster/"
+  fi
+  rm -f .vibe-kit-discovery.md .vibe-kit-discovery.json .vibe-kit-classification.json 2>/dev/null || true
+  _ok "Rollback complete."
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# cmd: doctor
+# Health check on a retrofitted repo. Read-only.
+# ────────────────────────────────────────────────────────────────────────────
+cmd_doctor() {
+  _check_git_repo
+
+  printf "\n%b┌─ vibe-kit doctor ────────────────────────────────────────┐%b\n" "$C_BOLD" "$C_RESET"
+
+  # 1. Is this repo retrofitted?
+  local retrofitted="no"
+  if [ -f .vibe-kit-version ]; then
+    retrofitted="yes"
+    local v_ver v_when v_tier
+    v_ver="$(jq -r '.vibe_kit_version // "unknown"' .vibe-kit-version 2>/dev/null)"
+    v_when="$(jq -r '.retrofitted_at // "unknown"' .vibe-kit-version 2>/dev/null)"
+    v_tier="$(jq -r '.tier // "unknown"' .vibe-kit-version 2>/dev/null)"
+    printf "  %b✓%b retrofitted (vibe-kit %s, tier %s, %s)\n" "$C_GREEN" "$C_RESET" "$v_ver" "$v_tier" "$v_when"
+  else
+    printf "  %b✗%b not retrofitted (.vibe-kit-version missing). Run \`vibe-retrofit tier 3\`.\n" "$C_RED" "$C_RESET"
+    printf "%b└──────────────────────────────────────────────────────────┘%b\n\n" "$C_BOLD" "$C_RESET"
+    return 0
+  fi
+
+  # 2. CLAUDE.md block intact?
+  if [ -f CLAUDE.md ] && grep -qF "<!-- vibe-kit-retrofit:v0.1 " CLAUDE.md 2>/dev/null; then
+    printf "  %b✓%b CLAUDE.md vibe-kit block present\n" "$C_GREEN" "$C_RESET"
+  else
+    printf "  %b!%b CLAUDE.md vibe-kit block missing — was it deleted?\n" "$C_YELLOW" "$C_RESET"
+  fi
+
+  # 3. KNOWN_GOTCHAS.md freshness
+  if [ -f KNOWN_GOTCHAS.md ]; then
+    local kg_age_days=0
+    if [ "$(uname)" = "Darwin" ]; then
+      kg_age_days=$(( ($(date +%s) - $(stat -f %m KNOWN_GOTCHAS.md)) / 86400 ))
+    else
+      kg_age_days=$(( ($(date +%s) - $(stat -c %Y KNOWN_GOTCHAS.md)) / 86400 ))
+    fi
+    if [ "$kg_age_days" -lt 14 ]; then
+      printf "  %b✓%b KNOWN_GOTCHAS.md updated %d days ago\n" "$C_GREEN" "$C_RESET" "$kg_age_days"
+    else
+      printf "  %b!%b KNOWN_GOTCHAS.md stale (%d days). The verification gate may not be catching things — or you're not logging.\n" "$C_YELLOW" "$C_RESET" "$kg_age_days"
+    fi
+  else
+    printf "  %b!%b KNOWN_GOTCHAS.md missing\n" "$C_YELLOW" "$C_RESET"
+  fi
+
+  # 4. Taskmaster activity
+  if [ -d .taskmaster ]; then
+    local task_count_open=0
+    if command -v task-master >/dev/null 2>&1; then
+      task_count_open="$(task-master list --status=pending 2>/dev/null | grep -c '^| ' || echo 0)"
+    fi
+    printf "  %b✓%b Taskmaster initialized (~%s pending tasks)\n" "$C_GREEN" "$C_RESET" "$task_count_open"
+  else
+    printf "  %b!%b Taskmaster not initialized (Tier 3 retrofit incomplete?)\n" "$C_YELLOW" "$C_RESET"
+  fi
+
+  # 5. Recommended actions
+  printf "\n  %bRecommended:%b\n" "$C_BOLD" "$C_RESET"
+  printf "    - Run \`/retro\` weekly to capture what shipped\n"
+  printf "    - Update KNOWN_GOTCHAS.md when the verification gate catches anything\n"
+  printf "    - Run \`task-master next\` at session start\n"
+
+  printf "%b└──────────────────────────────────────────────────────────┘%b\n\n" "$C_BOLD" "$C_RESET"
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# cmd: tier (orchestrator for tier 1/2/3 — wraps multiple subcommands)
+# ────────────────────────────────────────────────────────────────────────────
+cmd_tier() {
+  local tier="$1"; shift
+  local dry_run=0
+  for arg in "$@"; do
+    [ "$arg" = "--dry-run" ] && dry_run=1
+  done
+
+  case "$tier" in
+    1)
+      _info "Running Tier 1 retrofit (Minimum)…"
+      cmd_discover
+      cmd_merge_claude_md "$@"
+      cmd_write_version --tier 1 "$@"
+      _ok "Tier 1 retrofit complete."
+      ;;
+    2)
+      _info "Running Tier 2 retrofit (Standard)…"
+      cmd_discover
+      cmd_merge_claude_md "$@"
+      # NOTE: docs/vibe-kit/ scaffolds are written by the skill orchestrator
+      # (it knows how to pre-fill discovered-doc pointers). The bash library
+      # only handles deterministic merges. If skill didn't run, fall back to
+      # bare template copy.
+      _scaffold_docs_bare "$@"
+      cmd_write_version --tier 2 "$@"
+      _ok "Tier 2 retrofit complete."
+      ;;
+    3)
+      _info "Running Tier 3 retrofit (Full)…"
+      cmd_discover
+      cmd_merge_claude_md "$@"
+      _scaffold_docs_bare "$@"
+      cmd_init_taskmaster "$@"
+      cmd_write_version --tier 3 "$@"
+      _ok "Tier 3 retrofit complete."
+      ;;
+    *)
+      _die "Unknown tier: $tier. Use 1, 2, or 3."
+      ;;
+  esac
+}
+
+# Helper: scaffold docs/vibe-kit/ from templates (bare — no skill enrichment)
+_scaffold_docs_bare() {
+  local dry_run=0
+  for arg in "$@"; do
+    [ "$arg" = "--dry-run" ] && dry_run=1
+  done
+
+  local tmpl_dir="$VIBE_KIT_ROOT/templates/docs/vibe-kit"
+  local json_path; json_path="$(_report_json_path)"
+  local project_name
+  project_name="$(basename "$(pwd)")"
+
+  local f basename_f rendered
+  for f in "$tmpl_dir"/*.tmpl; do
+    basename_f="$(basename "$f" .tmpl)"
+    local target="docs/vibe-kit/$basename_f"
+    if [ -f "$target" ]; then
+      _info "  → $target already exists, skipping"
+      continue
+    fi
+    rendered="$(cat "$f")"
+    rendered="${rendered//\{\{project_name\}\}/$project_name}"
+    rendered="${rendered//\{\{existing_docs_pointer_block\}\}/}"
+    rendered="${rendered//\{\{test_command\}\}/$(jq -r '.commands.test // "(not detected)"' "$json_path" 2>/dev/null)}"
+    rendered="${rendered//\{\{test_file_count_block\}\}/}"
+
+    if [ "$dry_run" -eq 1 ]; then
+      _info "  → WOULD WRITE: $target"
+    else
+      mkdir -p docs/vibe-kit
+      printf '%s\n' "$rendered" > "$target"
+      _ok "  → wrote $target"
+    fi
+  done
+
+  # KNOWN_GOTCHAS.md at repo root
+  local kg_tmpl="$VIBE_KIT_ROOT/templates/KNOWN_GOTCHAS.md.tmpl"
+  if [ -f "$kg_tmpl" ] && [ ! -f KNOWN_GOTCHAS.md ]; then
+    rendered="$(cat "$kg_tmpl")"
+    rendered="${rendered//\{\{project_name\}\}/$project_name}"
+    if [ "$dry_run" -eq 1 ]; then
+      _info "  → WOULD WRITE: KNOWN_GOTCHAS.md"
+    else
+      printf '%s\n' "$rendered" > KNOWN_GOTCHAS.md
+      _ok "  → wrote KNOWN_GOTCHAS.md"
+    fi
+  fi
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# cmd: version
+# ────────────────────────────────────────────────────────────────────────────
+cmd_version() {
+  echo "vibe-retrofit $VIBE_KIT_VERSION"
+  echo "  bash:    $(bash --version | head -1)"
+  echo "  root:    $VIBE_KIT_ROOT"
+  _resolve_sha256
+  echo "  sha256:  $_SHA256_CMD"
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# cmd: help
+# ────────────────────────────────────────────────────────────────────────────
+cmd_help() {
+  cat <<EOF
+vibe-retrofit — rescue your messy AI-coded repos.
+
+USAGE
+  vibe-retrofit <subcommand> [flags]
+
+SUBCOMMANDS
+  discover              Scan repo for existing context (agent files, plan docs,
+                        TODOs, third-party libs, inferred commands). Writes
+                        .vibe-kit-discovery.{md,json}. Read-only.
+  merge-claude-md       Append/replace the vibe-kit block in CLAUDE.md.
+                        Idempotent: detects existing marker block + refuses to
+                        overwrite if the block hash mismatches your last
+                        retrofit (i.e., you edited inside it).
+  write-version         Write .vibe-kit-version JSON (template hashes + block hash).
+  init-taskmaster       Initialize Taskmaster + parse-prd from discovered TODOs.
+                        Requires LLM API key (OPENAI_API_KEY recommended).
+  rollback              Combine git-revert + cleanup of .taskmaster/ and
+                        docs/vibe-kit/. Recovery path for failed retrofits.
+  doctor                Health check on a retrofitted repo. Read-only.
+  tier 1|2|3 [...]      Orchestrator: runs all subcommands in order for the tier.
+
+  version               Show version + env info.
+  help                  This message.
+
+GLOBAL FLAGS
+  --dry-run             Print every planned mutation without applying. Supported
+                        on all mutating subcommands (merge-claude-md, write-version,
+                        init-taskmaster, rollback, tier *).
+  --force               Override safety gates (e.g., block-hash mismatch in
+                        merge-claude-md). Use with care.
+
+ENV
+  REPORT_PATH_OVERRIDE  Override directory for .vibe-kit-discovery.{md,json}.
+                        Use for client/contract repos: REPORT_PATH_OVERRIDE=~/.vibe-kit/discovery/<slug>
+  OPENAI_API_KEY        Required for Tier 3 (parse-prd via task-master).
+  ANTHROPIC_API_KEY     Alternative LLM key.
+  PERPLEXITY_API_KEY    Alternative LLM key.
+  NO_COLOR              Disable colored output if set.
+
+EXAMPLES
+  vibe-retrofit discover                  # Read-only scan, writes reports
+  vibe-retrofit tier 1 --dry-run          # Preview Tier 1 changes
+  vibe-retrofit tier 3                    # Full retrofit (canary repo)
+  vibe-retrofit doctor                    # Periodic health check
+  vibe-retrofit rollback --dry-run        # Preview rollback
+
+See https://github.com/myi1/vibe-kit for full docs.
+EOF
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# Entry point
+# ────────────────────────────────────────────────────────────────────────────
+main() {
+  if [ $# -lt 1 ]; then
+    cmd_help
+    exit 1
+  fi
+
+  local sub="$1"; shift
+  case "$sub" in
+    discover)         cmd_discover "$@" ;;
+    merge-claude-md)  cmd_merge_claude_md "$@" ;;
+    write-version)    cmd_write_version "$@" ;;
+    init-taskmaster)  cmd_init_taskmaster "$@" ;;
+    rollback)         cmd_rollback "$@" ;;
+    doctor)           cmd_doctor "$@" ;;
+    tier)
+      [ $# -lt 1 ] && _die "tier requires a number: 1, 2, or 3"
+      cmd_tier "$@"
+      ;;
+    version|--version|-v)  cmd_version ;;
+    help|--help|-h|"")     cmd_help ;;
+    *) _die "Unknown subcommand: $sub. Run 'vibe-retrofit help' for usage." ;;
+  esac
+}
+
+main "$@"

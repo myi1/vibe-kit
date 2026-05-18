@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract tag version
+        id: version
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify VERSION matches tag
+        run: |
+          tag="${{ steps.version.outputs.tag }}"
+          tag_no_v="${tag#v}"
+          file_ver="$(cat VERSION | tr -d '[:space:]')"
+          if [ "$tag_no_v" != "$file_ver" ]; then
+            echo "::error::Tag ($tag_no_v) does not match VERSION file ($file_ver)"
+            exit 1
+          fi
+          echo "Version match: $tag_no_v"
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          tag="${{ steps.version.outputs.tag }}"
+          tag_no_v="${tag#v}"
+          # Extract the section between `## [<tag>]` and the next `## [`
+          awk -v ver="$tag_no_v" '
+            $0 ~ "^## \\[" ver "\\]" { p=1; next }
+            p && /^## \[/ { exit }
+            p { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "No CHANGELOG entry for $tag_no_v — using fallback note"
+            echo "Release $tag — see CHANGELOG.md for details." > release-notes.md
+          fi
+          echo "--- release-notes.md ---"
+          cat release-notes.md
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          body_path: release-notes.md
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
