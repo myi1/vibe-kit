@@ -226,9 +226,10 @@ _load_fixture() {
   [ "$status" -eq 0 ]
   [ -f CLAUDE.md ]
   [ -f .vibe-kit-version ]
-  # JSON is well-formed
+  # JSON is well-formed — version sourced dynamically from VERSION file
+  expected_ver="$(cat "$VIBE_KIT_ROOT/VERSION" | tr -d '[:space:]')"
   run jq -r '.vibe_kit_version' .vibe-kit-version
-  [ "$output" = "0.1.0-pre" ]
+  [ "$output" = "$expected_ver" ]
   run jq -r '.tier' .vibe-kit-version
   [ "$output" = "1" ]
   # block_hash is populated
@@ -274,11 +275,24 @@ _load_fixture() {
 # Version + help
 # ============================================================================
 
-@test "version: prints version string" {
+@test "version: prints version string (sourced from VERSION file, not hardcoded)" {
   run "$VIBE_RETROFIT" version
   [ "$status" -eq 0 ]
   [[ "$output" == *"vibe-retrofit"* ]]
-  [[ "$output" == *"0.1.0-pre"* ]]
+  # The version in the script output should match the contents of VERSION
+  expected="$(cat "$VIBE_KIT_ROOT/VERSION" | tr -d '[:space:]')"
+  [[ "$output" == *"$expected"* ]]
+}
+
+@test "merge-claude-md: renders '(not detected — fill in)' for empty commands (not literal empty backticks)" {
+  # Fixture with no test/typecheck scripts — should fall back to the placeholder
+  _load_fixture empty-repo
+  "$VIBE_RETROFIT" discover >/dev/null 2>&1
+  "$VIBE_RETROFIT" merge-claude-md
+  # CLAUDE.md should contain the fallback string, NOT empty backticks
+  run grep "Typecheck:" CLAUDE.md
+  [[ "$output" != *'``'* ]]
+  [[ "$output" == *"not detected"* ]]
 }
 
 @test "help: prints usage" {

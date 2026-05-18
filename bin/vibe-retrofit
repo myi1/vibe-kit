@@ -5,8 +5,6 @@
 
 set -eu
 
-VIBE_KIT_VERSION="0.1.0-pre"
-
 # Resolve VIBE_KIT_ROOT: directory containing this script's parent.
 # Handles both direct invocation (./bin/vibe-retrofit) and wrapper invocation
 # (where install.sh wrote a wrapper that exec's this script with absolute path).
@@ -24,6 +22,14 @@ _resolve_self() {
   echo "$(cd -P "$(dirname "$src")/.." && pwd)"
 }
 VIBE_KIT_ROOT="${VIBE_KIT_ROOT:-$(_resolve_self)}"
+
+# Single source of truth for version: read the VERSION file at startup.
+# Falls back to "unknown" if VERSION is missing (e.g., partial install).
+if [ -r "$VIBE_KIT_ROOT/VERSION" ]; then
+  VIBE_KIT_VERSION="$(cat "$VIBE_KIT_ROOT/VERSION" | tr -d '[:space:]')"
+else
+  VIBE_KIT_VERSION="unknown"
+fi
 
 # ────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -590,12 +596,15 @@ cmd_merge_claude_md() {
   local json_path; json_path="$(_report_json_path)"
   [ -f "$json_path" ] || _die "No discovery report at $json_path. Run 'vibe-retrofit discover' first."
 
-  # Pull inferred commands from the discovery JSON
+  # Pull inferred commands from the discovery JSON. jq's `//` operator only
+  # fires on null, NOT on empty strings — and discover writes empty strings
+  # when nothing is inferred. Treat both as "not detected" explicitly.
   local cmd_test cmd_typecheck cmd_dev cmd_install
-  cmd_test="$(jq -r '.commands.test // "(not detected — fill in)"' "$json_path")"
-  cmd_typecheck="$(jq -r '.commands.typecheck // "(not detected — fill in)"' "$json_path")"
-  cmd_dev="$(jq -r '.commands.dev // "(not detected — fill in)"' "$json_path")"
-  cmd_install="$(jq -r '.commands.install // "(not detected — fill in)"' "$json_path")"
+  local _missing='(not detected — fill in)'
+  cmd_test="$(jq -r --arg m "$_missing" '.commands.test | if . == null or . == "" then $m else . end' "$json_path")"
+  cmd_typecheck="$(jq -r --arg m "$_missing" '.commands.typecheck | if . == null or . == "" then $m else . end' "$json_path")"
+  cmd_dev="$(jq -r --arg m "$_missing" '.commands.dev | if . == null or . == "" then $m else . end' "$json_path")"
+  cmd_install="$(jq -r --arg m "$_missing" '.commands.install | if . == null or . == "" then $m else . end' "$json_path")"
 
   # Build context7 library allowlist
   local libs_block

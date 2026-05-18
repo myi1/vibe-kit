@@ -2,6 +2,23 @@
 
 All notable changes to vibe-kit are documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-pre.3] — 2026-05-18 (version-sync + empty-command fallback)
+
+Caught by Tier 2 dry-run on canary before applying.
+
+### Fixed
+- **`VIBE_KIT_VERSION` was hardcoded in the script** as `0.1.0-pre`, so every release-version bump required updating both the `VERSION` file AND the script — and the script's value got stale silently. Now sourced from `VERSION` at script startup. Single source of truth. (canary bug 6)
+- **Empty inferred commands rendered as literal `` `` `` in CLAUDE.md** (e.g., `Tests: ``) when `package.json` doesn't have a matching script. `jq`'s `//` operator only fires on `null`, not empty strings. Fixed with explicit `if . == null or . == ""` check. Now renders as `Tests: `(not detected — fill in)` ` which is the clear-action signal the template intended. (canary bug 8)
+
+### Known issues (deferred)
+- Bug 7: `--dry-run` still writes `.vibe-kit-discovery.{md,json}` because `discover` runs as a sub-step and doesn't honor the parent's dry-run flag. Philosophically wrong but the files are gitignored + idempotent. Defer to v0.2.0 alongside cross-machine work.
+
+### Tests
+- 1 new regression test for VERSION sync (asserts script-output version matches `cat VERSION`).
+- 1 new regression test for empty-command fallback (asserts `Typecheck:` line in CLAUDE.md doesn't contain literal empty backticks AND does contain "not detected").
+- Existing test 22 updated to use dynamic version expectation (was hardcoded as `"0.1.0-pre"`, now reads VERSION at runtime).
+- Suite: 36 green.
+
 ## [0.1.0-pre.2] — 2026-05-18 (gstack history surfacing)
 
 Second canary iteration. User flagged a major omission: `discover` was only scanning the current repo's tracked files, missing the **94 gstack artifacts** stored at `~/.gstack/projects/<slug>/` for the canary (design docs from `/office-hours`, CEO plans, eng-review test plans, checkpoints, handoff notes, structured learnings, session timeline, deploys log). These are the user's most load-bearing scattered context and skipping them defeats the retrofit's centralizing premise.
