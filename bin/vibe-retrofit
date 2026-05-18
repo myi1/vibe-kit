@@ -110,6 +110,38 @@ _report_md_path()   { echo "${REPORT_PATH_OVERRIDE:-$PWD}/.vibe-kit-discovery.md
 _report_json_path() { echo "${REPORT_PATH_OVERRIDE:-$PWD}/.vibe-kit-discovery.json"; }
 _classification_path() { echo "${REPORT_PATH_OVERRIDE:-$PWD}/.vibe-kit-classification.json"; }
 
+# v0.2.0: project_key resolution + global reference dir.
+#
+# The reference layer (gstack-learnings, design docs, ceo plans, handoffs) lives
+# OUTSIDE the repo at ~/.vibe-kit/projects/<project_key>/reference/ so it's
+# available to every session regardless of which branch is checked out. The
+# v0.1 design put these in docs/vibe-kit/reference/ which broke the moment a
+# fresh session opened on a branch that hadn't merged the retrofit yet.
+#
+# project_key defaults to basename(cwd). User can override by editing
+# .vibe-kit-version's project_key field after retrofit (e.g., for repos with
+# generic names like "frontend" that collide across projects).
+_resolve_project_key() {
+  if [ -f .vibe-kit-version ] && command -v jq >/dev/null 2>&1; then
+    local stored
+    stored="$(jq -r '.project_key // ""' .vibe-kit-version 2>/dev/null)"
+    if [ -n "$stored" ] && [ "$stored" != "null" ]; then
+      echo "$stored"
+      return 0
+    fi
+  fi
+  basename "$(pwd)"
+}
+
+_global_project_dir() {
+  local key="${1:-$(_resolve_project_key)}"
+  echo "$HOME/.vibe-kit/projects/$key"
+}
+
+_global_reference_dir() {
+  echo "$(_global_project_dir "$@")/reference"
+}
+
 # ────────────────────────────────────────────────────────────────────────────
 # cmd: discover
 # ────────────────────────────────────────────────────────────────────────────
@@ -610,6 +642,16 @@ cmd_merge_claude_md() {
   local libs_block
   libs_block="$(jq -r '.libraries | if length == 0 then "_No third-party libraries detected._" else map("- " + .) | join("\n") end' "$json_path")"
 
+  # v0.2.0: resolve project_key + the global reference dir so the rendered
+  # CLAUDE.md block points at the canonical out-of-repo location instead of
+  # a docs/vibe-kit/reference/ that may not exist on the current branch.
+  local project_key global_ref
+  project_key="$(_resolve_project_key)"
+  global_ref="$(_global_reference_dir "$project_key")"
+  # Render with $HOME contracted to ~ for display readability.
+  local global_ref_display
+  global_ref_display="${global_ref/#$HOME/~}"
+
   # Render the template by simple variable substitution.
   # Bash 3.2 compat: use sed -e for each variable.
   local rendered
@@ -619,6 +661,8 @@ cmd_merge_claude_md() {
   rendered="${rendered//\{\{test_command\}\}/$cmd_test}"
   rendered="${rendered//\{\{typecheck_command\}\}/$cmd_typecheck}"
   rendered="${rendered//\{\{dev_server_command\}\}/$cmd_dev}"
+  rendered="${rendered//\{\{project_key\}\}/$project_key}"
+  rendered="${rendered//\{\{global_reference_dir\}\}/$global_ref_display}"
 
   # Detect existing marker block in CLAUDE.md
   local start_marker="<!-- vibe-kit-retrofit:v0.1 "
@@ -746,6 +790,14 @@ cmd_write_version() {
     block_hash="$(printf '%s' "$block_content" | _sha256)"
   fi
 
+  # v0.2.0: project_key persists across upgrades. If already set in
+  # .vibe-kit-version (e.g., user manually overrode for a collision), preserve
+  # it. Otherwise default to basename(cwd).
+  local project_key
+  project_key="$(_resolve_project_key)"
+  local global_dir
+  global_dir="$(_global_project_dir "$project_key")"
+
   local out
   out="$(jq -n \
     --arg ver "$VIBE_KIT_VERSION" \
@@ -756,10 +808,14 @@ cmd_write_version() {
     --arg th_taskmaster "$th_taskmaster" \
     --arg th_verification "$th_verification" \
     --arg block_hash "$block_hash" \
+    --arg project_key "$project_key" \
+    --arg global_dir "$global_dir" \
     '{
       vibe_kit_version: $ver,
       retrofitted_at: $ts,
       tier: $tier,
+      project_key: $project_key,
+      global_reference_dir: ($global_dir + "/reference"),
       template_hashes: {
         "templates/CLAUDE.md.tmpl": $th_claude,
         "rules/context7.md": $th_context7,
@@ -776,7 +832,7 @@ cmd_write_version() {
   fi
 
   printf '%s\n' "$out" > .vibe-kit-version
-  _ok "Wrote .vibe-kit-version (tier $tier, block_hash=${block_hash:0:8}…)"
+  _ok "Wrote .vibe-kit-version (tier $tier, project_key=$project_key, block_hash=${block_hash:0:8}…)"
 }
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -984,6 +1040,143 @@ cmd_doctor() {
 }
 
 # ────────────────────────────────────────────────────────────────────────────
+# cmd: migrate-to-global (v0.2.0)
+# One-shot migration for pre-v0.2 retrofitted repos: moves docs/vibe-kit/reference/
+# to the global location ~/.vibe-kit/projects/<key>/reference/ and deletes the
+# in-repo copy. Idempotent: skips quietly if already migrated.
+# ────────────────────────────────────────────────────────────────────────────
+cmd_migrate_to_global() {
+  local dry_run=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry_run=1 ;;
+      *) _die "Unknown flag for migrate-to-global: $1" ;;
+    esac
+    shift
+  done
+
+  _check_git_repo
+
+  # Require the repo to actually be retrofitted.
+  if [ ! -f .vibe-kit-version ]; then
+    _die ".vibe-kit-version missing — this repo isn't retrofitted yet. Run \`vibe-retrofit tier 1\` (or 2/3) instead."
+  fi
+
+  local project_key; project_key="$(_resolve_project_key)"
+  local global_dir; global_dir="$(_global_project_dir "$project_key")"
+  local global_ref="$global_dir/reference"
+  local global_ref_display="${global_ref/#$HOME/~}"
+  local in_repo_ref="docs/vibe-kit/reference"
+
+  _info "Migration plan for project_key=$project_key:"
+  _info "  Source:      $in_repo_ref/  (in-repo, branch-coupled)"
+  _info "  Destination: $global_ref_display/  (global, branch-independent)"
+  echo ""
+
+  # Detect current state.
+  local has_in_repo=0 has_global=0
+  [ -d "$in_repo_ref" ] && has_in_repo=1
+  [ -d "$global_ref" ] && has_global=1
+
+  if [ "$has_in_repo" -eq 0 ] && [ "$has_global" -eq 1 ]; then
+    _ok "Already migrated — global reference dir exists, no in-repo copy. Nothing to do."
+    _ok "Verify with: ls $global_ref_display/"
+    return 0
+  fi
+
+  if [ "$has_in_repo" -eq 0 ] && [ "$has_global" -eq 0 ]; then
+    _warn "No reference dir found in either location. Run \`vibe-retrofit tier 2\` to scaffold a fresh one."
+    return 0
+  fi
+
+  # Reuse uncommitted-change check (same posture as merge-claude-md). Only
+  # gates on in-repo paths since the global dir isn't tracked anywhere.
+  [ "$dry_run" -eq 0 ] && _check_clean_targets "$in_repo_ref" .vibe-kit-version
+
+  if [ "$dry_run" -eq 1 ]; then
+    if [ "$has_in_repo" -eq 1 ]; then
+      _info "DRY RUN: would mkdir -p $global_ref_display/"
+      _info "DRY RUN: would copy $in_repo_ref/ → $global_ref_display/ (preserves symlinks)"
+      _info "DRY RUN: would rm -rf $in_repo_ref/"
+      _info "DRY RUN: would re-run \`vibe-retrofit tier 2\` to rebuild the global dir from current discovery + add a pointer at docs/vibe-kit/README.md"
+      _info "DRY RUN: would re-render CLAUDE.md block (paths now point at global)"
+      _info "DRY RUN: would update .vibe-kit-version (adds project_key + global_reference_dir fields)"
+    fi
+    return 0
+  fi
+
+  # Step 1: ensure global dir exists.
+  mkdir -p "$global_dir"
+
+  # Step 2: rebuild the global reference from current discovery rather than
+  # copying. The copy approach preserves stale symlinks; the rebuild path
+  # walks the current discovery JSON and re-creates everything fresh. This
+  # is also what migrating a repo that's been retrofitted for months should
+  # produce — the latest snapshot of artifacts, not whatever's on disk.
+  if [ ! -f "$(_report_json_path)" ]; then
+    _info "Re-running discover to pick up current artifacts…"
+    cmd_discover
+  fi
+  _info "Rebuilding global reference dir from current discovery…"
+  _scaffold_gstack_reference
+
+  # Step 3: delete the in-repo reference dir (user picked the aggressive option).
+  if [ "$has_in_repo" -eq 1 ]; then
+    _info "Removing in-repo $in_repo_ref/ (no longer needed)…"
+    rm -rf "$in_repo_ref"
+    _ok "Removed $in_repo_ref/"
+  fi
+
+  # Step 4: leave a pointer README so users browsing the repo know where
+  # the reference layer moved to.
+  mkdir -p docs/vibe-kit
+  cat > docs/vibe-kit/README.md <<EOF
+# vibe-kit project notes — $project_key
+
+The reference layer (gstack learnings, design docs, ceo plans, handoffs,
+checkpoints) for this project lives **outside** the repo at:
+
+    $global_ref_display/
+
+This is intentional. v0.1 of vibe-kit put it inside \`docs/vibe-kit/reference/\`,
+which broke session continuity whenever a fresh Claude Code session opened on
+a branch that hadn't merged the retrofit commit. v0.2.0 moved it to a global
+location keyed by \`project_key\` so it's available regardless of git state.
+
+The SessionStart hook (\`~/.claude/hooks/vibe-kit-session-start.sh\`) reads
+\`project_key\` from \`.vibe-kit-version\` in the cwd and resolves the bundle
+from there.
+
+**To refresh the reference layer** (after new design docs, CEO plans,
+learnings, or handoffs land in gstack), run from this repo root:
+
+    vibe-retrofit tier 2
+
+**To inspect the reference layer:**
+
+    ls $global_ref_display/
+
+This file (\`docs/vibe-kit/README.md\`) is the only vibe-kit artifact that
+stays in the repo's docs/ tree. Everything else moves with branches as
+designed (CLAUDE.md additions, KNOWN_GOTCHAS.md, .taskmaster/, .vibe-kit-version).
+EOF
+  _ok "Wrote pointer at docs/vibe-kit/README.md"
+
+  # Step 5: re-merge CLAUDE.md so the rendered block points at the global
+  # paths (the v0.1 block hardcoded docs/vibe-kit/reference/).
+  _info "Re-rendering CLAUDE.md block (paths now point at global)…"
+  cmd_merge_claude_md --force
+
+  # Step 6: re-write .vibe-kit-version so it carries project_key + global_reference_dir.
+  cmd_write_version --tier "$(jq -r '.tier // 1' .vibe-kit-version 2>/dev/null || echo 1)"
+
+  echo ""
+  _ok "Migration to v0.2.0 global layout complete."
+  _ok "Reference layer is now at: $global_ref_display/"
+  _ok "Open a fresh Claude Code session to verify the briefing reads from the new location."
+}
+
+# ────────────────────────────────────────────────────────────────────────────
 # cmd: tier (orchestrator for tier 1/2/3 — wraps multiple subcommands)
 # ────────────────────────────────────────────────────────────────────────────
 cmd_tier() {
@@ -1030,14 +1223,17 @@ cmd_tier() {
   esac
 }
 
-# Helper: build docs/vibe-kit/reference/ from discovered gstack artifacts.
+# Helper: build ~/.vibe-kit/projects/<project_key>/reference/ from discovered
+# gstack artifacts. v0.2.0 moves this OUT of the repo so it's session-available
+# regardless of which branch is checked out.
+#
 # Creates:
-#   docs/vibe-kit/reference/README.md         — explains what's here
-#   docs/vibe-kit/reference/gstack-learnings.md — formatted from learnings.jsonl
-#   docs/vibe-kit/reference/gstack-designs/    — symlinks to design docs
-#   docs/vibe-kit/reference/gstack-ceo-plans/  — symlinks to ceo-plans/
-#   docs/vibe-kit/reference/gstack-handoffs/   — symlinks to handoff notes
-#   docs/vibe-kit/reference/gstack-checkpoints/ — symlinks to checkpoints/
+#   ~/.vibe-kit/projects/<key>/reference/README.md         — explains what's here
+#   ~/.vibe-kit/projects/<key>/reference/gstack-learnings.md — formatted from learnings.jsonl
+#   ~/.vibe-kit/projects/<key>/reference/gstack-designs/    — symlinks to design docs
+#   ~/.vibe-kit/projects/<key>/reference/gstack-ceo-plans/  — symlinks to ceo-plans/
+#   ~/.vibe-kit/projects/<key>/reference/gstack-handoffs/   — symlinks to handoff notes
+#   ~/.vibe-kit/projects/<key>/reference/gstack-checkpoints/ — symlinks to checkpoints/
 #
 # Symlinks use absolute paths (these are local-machine refs, not portable).
 # Skipped silently if no gstack artifacts in discovery JSON.
@@ -1059,19 +1255,29 @@ _scaffold_gstack_reference() {
     return 0
   fi
 
-  local refdir="docs/vibe-kit/reference"
+  local project_key; project_key="$(_resolve_project_key)"
+  local refdir; refdir="$(_global_reference_dir "$project_key")"
+  local refdir_display="${refdir/#$HOME/~}"
   if [ "$dry_run" -eq 1 ]; then
-    _info "  → WOULD CREATE: $refdir/ (gstack symlinks + learnings.md)"
+    _info "  → WOULD CREATE: $refdir_display/ (gstack symlinks + learnings.md, global — survives branch switches)"
     return 0
   fi
   mkdir -p "$refdir"
 
   # ── README explaining the reference layout ──────────────────────────────
   {
-    echo "# Reference index"
+    echo "# Reference index — project: $project_key"
     echo ""
-    echo "Auto-generated by \`vibe-retrofit tier 2+\` from gstack artifacts found at:"
+    echo "Auto-generated by \`vibe-retrofit tier 2+\` (v$VIBE_KIT_VERSION) from gstack artifacts found at:"
     jq -r '.gstack.project_dirs[] | "- `" + . + "`"' "$json_path" 2>/dev/null
+    echo ""
+    echo "## Where this lives + why"
+    echo ""
+    echo "This directory is at \`$refdir_display\` — OUTSIDE the project repo on purpose."
+    echo ""
+    echo "v0.1 put it inside the repo under \`docs/vibe-kit/reference/\`. That broke session continuity: when a fresh Claude Code session opened on a branch that hadn't merged the retrofit commit, the reference layer was invisible. v0.2.0 moved it to a global location keyed by \`project_key\` so it's available to every session regardless of git state."
+    echo ""
+    echo "The SessionStart hook reads \`.vibe-kit-version\`'s \`project_key\` field from the cwd to resolve this location, so multiple repos with different keys each get their own bundle."
     echo ""
     echo "## What's here"
     echo ""
@@ -1083,7 +1289,11 @@ _scaffold_gstack_reference() {
     echo ""
     echo "## Caveat: symlinks are absolute"
     echo ""
-    echo "These symlinks point to absolute paths under \`\$HOME/.gstack/projects/\` on the machine where retrofit was run. They will break on another machine. If you sync this repo across machines, treat the symlinks as machine-local references — re-run \`vibe-retrofit tier 2\` on each machine to regenerate them."
+    echo "These symlinks point to absolute paths under \`\$HOME/.gstack/projects/\` on the machine where retrofit was run. They will break on another machine. Re-run \`vibe-retrofit tier 2\` on each machine to regenerate them."
+    echo ""
+    echo "## Refresh"
+    echo ""
+    echo "Re-run \`vibe-retrofit tier 2\` (or tier 3) from the repo root to pick up new design docs, ceo plans, learnings, and handoffs."
   } > "$refdir/README.md"
 
   # ── Format learnings.jsonl into human-readable markdown ──────────────────
@@ -1165,8 +1375,10 @@ _scaffold_gstack_reference() {
         ln -s "$target" "$refdir/$subname/$name" 2>/dev/null || true
       fi
     done
-    _ok "  → linked $count files into $refdir/$subname/"
+    _ok "  → linked $count files into $refdir_display/$subname/"
   done
+
+  _ok "  → global reference dir at $refdir_display (visible to every session via SessionStart hook)"
 }
 
 # Helper: scaffold docs/vibe-kit/ from templates (bare — no skill enrichment)
@@ -1253,6 +1465,10 @@ SUBCOMMANDS
   rollback              Combine git-revert + cleanup of .taskmaster/ and
                         docs/vibe-kit/. Recovery path for failed retrofits.
   doctor                Health check on a retrofitted repo. Read-only.
+  migrate-to-global     One-shot v0.1 → v0.2 migration: moves docs/vibe-kit/reference/
+                        out of the repo to ~/.vibe-kit/projects/<key>/reference/ so
+                        the SessionStart hook works regardless of which branch is
+                        checked out. Idempotent. --dry-run supported.
   tier 1|2|3 [...]      Orchestrator: runs all subcommands in order for the tier.
 
   version               Show version + env info.
@@ -1301,6 +1517,7 @@ main() {
     init-taskmaster)  cmd_init_taskmaster "$@" ;;
     rollback)         cmd_rollback "$@" ;;
     doctor)           cmd_doctor "$@" ;;
+    migrate-to-global) cmd_migrate_to_global "$@" ;;
     tier)
       [ $# -lt 1 ] && _die "tier requires a number: 1, 2, or 3"
       cmd_tier "$@"

@@ -3,15 +3,19 @@
 
 This block is managed by `vibe-retrofit`. Custom edits inside will be overwritten on re-run unless you move them above this marker or use `--force` (see CONTRIBUTING.md in vibe-kit).
 
+**Project key:** `{{project_key}}` — reference layer lives at `{{global_reference_dir}}/` (outside this repo, so it survives branch switches).
+
 ## Session start ritual (imperative — do this BEFORE responding to the user's first request)
 
 These steps are not optional. Skipping them means relearning patterns past sessions already established and re-causing pitfalls already documented.
 
 1. **Read this file in full.** All sections below contain conventions you must follow.
-2. **Read `docs/vibe-kit/reference/gstack-learnings.md` if it exists.** Those entries are high-confidence patterns, pitfalls, conventions, and architectural decisions from prior gstack sessions on this repo — each one was logged because someone (often the user) hit a specific case worth remembering. Verify any assumption you're about to act on against this file. Quote the relevant entry's key in your reply when applying it.
+2. **Read `{{global_reference_dir}}/gstack-learnings.md` if it exists.** Those entries are high-confidence patterns, pitfalls, conventions, and architectural decisions from prior gstack sessions on this repo — each one was logged because someone (often the user) hit a specific case worth remembering. Verify any assumption you're about to act on against this file. Quote the relevant entry's key in your reply when applying it.
 3. **Check pending work:** if `.taskmaster/` exists, run `task-master next` to surface the highest-priority queued task. Show the user what's queued before they tell you what they want — they may have forgotten what was already prioritized.
-4. **Scan related prior work:** if the user's first request touches a recognizable system area (auth, billing, scraping, prompts, deploy, schema, etc.), list relevant files under `docs/vibe-kit/reference/gstack-designs/` and `docs/vibe-kit/reference/gstack-ceo-plans/` BEFORE proposing changes. Read the most-relevant one if you're about to make architectural or scope decisions.
+4. **Scan related prior work:** if the user's first request touches a recognizable system area (auth, billing, scraping, prompts, deploy, schema, etc.), list relevant files under `{{global_reference_dir}}/gstack-designs/` and `{{global_reference_dir}}/gstack-ceo-plans/` BEFORE proposing changes. Read the most-relevant one if you're about to make architectural or scope decisions.
 5. **Note the session start in the user's first reply.** A short "Loaded N learnings, M pending tasks, recent designs: …" line is the proof to the user that the ritual ran.
+
+**Why the reference path is outside the repo (v0.2.0):** the reference layer used to live in `docs/vibe-kit/reference/`, which broke whenever a fresh session opened on a branch that hadn't merged the retrofit commit. Now it lives globally under `~/.vibe-kit/projects/<project_key>/`, keyed by the `project_key` field in `.vibe-kit-version`, so the SessionStart hook (and you, manually) can always find it regardless of git state. To refresh after new gstack artifacts land, run `vibe-retrofit tier 2` from the repo root.
 
 ## Task tracking integration
 

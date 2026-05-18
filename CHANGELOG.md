@@ -2,6 +2,39 @@
 
 All notable changes to vibe-kit are documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-05-19 (Reference layer moves outside the repo — branch-independent context)
+
+**The bug that drove this release:** user's fresh Claude Code session on the canary repo couldn't see the vibe-kit briefing, because the canary's retrofit lived on a feature branch that hadn't merged to main. The SessionStart hook found `.vibe-kit-version` but the `docs/vibe-kit/reference/` it pointed at didn't exist on main yet. Re-initialize, lose context — the whole point of session-start was defeated by the worst possible thing: git branch state.
+
+The fix is architectural: the reference layer (gstack-learnings, design docs, CEO plans, handoffs, checkpoints) now lives at `~/.vibe-kit/projects/<project_key>/reference/` — outside the repo entirely. The SessionStart hook resolves the path from a `project_key` field newly persisted into `.vibe-kit-version`. Every branch sees the same reference layer. Cloning a repo onto a new machine pulls only the branch-coupled artifacts (CLAUDE.md additions, KNOWN_GOTCHAS, .taskmaster) — no personal gstack history leaks across machines.
+
+### Added
+- **`vibe-retrofit migrate-to-global`** subcommand: one-shot migration for pre-v0.2 retrofitted repos. Detects in-repo `docs/vibe-kit/reference/`, rebuilds the bundle at `~/.vibe-kit/projects/<key>/reference/` from current discovery (not a stale copy), deletes the in-repo dir, leaves a pointer README at `docs/vibe-kit/README.md`, re-renders the CLAUDE.md block with global paths, and updates `.vibe-kit-version` with the new fields. Idempotent — safe to re-run; reports "Already migrated" if there's nothing to do. `--dry-run` supported.
+- **`project_key` field in `.vibe-kit-version`** — defaults to `basename(cwd)`. Users with collision-prone repo names (e.g., multiple repos basename'd `frontend`) can edit it manually post-retrofit; subsequent re-runs preserve the override via `_resolve_project_key()`.
+- **`global_reference_dir` field in `.vibe-kit-version`** — absolute path to the bundle, computed from `project_key`. Hook + CLAUDE.md template both consume this.
+- **Helpers in `bin/vibe-retrofit`** — `_resolve_project_key()`, `_global_project_dir()`, `_global_reference_dir()`. Single source of truth.
+- **README at `~/.vibe-kit/projects/<key>/reference/README.md`** explaining why the bundle lives outside the repo and how to refresh it (`vibe-retrofit tier 2` from the repo root).
+
+### Changed
+- **SessionStart hook (`hooks/vibe-kit-session-start.sh`)** reads `project_key` from `.vibe-kit-version` and resolves the global location instead of the prior in-repo `docs/vibe-kit/reference/`. Resolution precedence: explicit `global_reference_dir` field → `~/.vibe-kit/projects/<project_key>/reference/` → `~/.vibe-kit/projects/<basename-cwd>/reference/` → in-repo `docs/vibe-kit/reference/` (pre-v0.2 fallback, with a one-line nudge to run `vibe-retrofit migrate-to-global`).
+- **CLAUDE.md template** now embeds the resolved global path so the session-start ritual instructions Claude sees point at the canonical out-of-repo location. New `{{project_key}}` and `{{global_reference_dir}}` substitutions handled by `cmd_merge_claude_md`.
+- **`_scaffold_gstack_reference`** writes to the global location instead of `docs/vibe-kit/reference/`. The reference README explains the move + how to refresh.
+- **Tier 2 and Tier 3 orchestrators** transparently use the global location. New retrofits get the v0.2 layout from day one.
+- **`docs/vibe-kit/README.md` pointer** is the only vibe-kit artifact left in the docs/ tree post-migration. Tells anyone browsing the repo where the reference layer moved to and how to refresh it.
+
+### Fixed
+- **jq escape bug introduced mid-build:** the v0.2 reference README initially used `\\` (backslash-backtick) inside a jq string literal, which is not a valid jq escape. set -e killed the migration silently. Caught during smoke test, fixed before any user-visible release.
+
+### Migration
+1. **Existing users (no retrofitted repos yet):** `cd ~/dev/vibe-kit && git pull && bash bin/install.sh`. The wrapper + skills + hook refresh picks up v0.2. New retrofits are global by default.
+2. **Existing retrofitted repos:** `cd <repo> && vibe-retrofit migrate-to-global`. One command, idempotent, ~1 second. Re-render of CLAUDE.md block happens automatically. Commit the resulting diff (`docs/vibe-kit/README.md` added, `docs/vibe-kit/reference/` removed, `CLAUDE.md` re-rendered, `.vibe-kit-version` rewritten).
+
+### What this closes
+v0.1 design assumed the retrofit commit would be on main when sessions opened. Real life: branches exist, retrofit lives on a branch, fresh sessions hit main, briefing breaks. v0.2 decouples the reference layer from git state entirely. The CLAUDE.md additions, KNOWN_GOTCHAS, and `.taskmaster/` stay in the repo because they SHOULD be branch-aware (different branches may have different agent guidance or task lists). The reference layer is institutional knowledge about the project, not about any specific branch — it belongs outside.
+
+### Verified on canary
+`remax-hub-portal` migrated end-to-end: 19 learnings, 10 design docs, 3 CEO plans, 2 checkpoints, 1 handoff, 4 autoplans, 7 test plans all symlinked into `~/.vibe-kit/projects/remax-hub-portal/reference/`. Hook briefing renders the top-3 learnings + recent handoff + most-recent CEO plan independent of which branch is checked out.
+
 ## [0.1.0-pre.8] — 2026-05-18 (/vibe-start skill + SessionStart hook)
 
 Building on pre.7's "CLAUDE.md tells Claude what to do," adding two deterministic mechanisms so the user doesn't have to rely on Claude reading instructions.
