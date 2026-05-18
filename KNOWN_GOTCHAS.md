@@ -23,6 +23,20 @@ Ran `vibe-retrofit discover` on `~/Documents/GitHub/remax-hub-portal` (canary re
    - **Fix:** added heuristic — any root-level capitalized `.md` that isn't a standard project doc gets included.
    - **Regression test:** `test/fixtures/with-process-docs/` + 1 bats test.
 
+### 2026-05-18 — `set -e` + `[ ... ] && cmd` killed scaffolder silently
+
+When applying Tier 2 to the canary on a fresh branch off main, the script appeared to finish but produced a half-retrofitted state: `docs/vibe-kit/reference/gstack-learnings.md` was empty (just the header), no symlinks were created, and `.vibe-kit-version` wasn't written at all.
+
+Root cause: `set -e` + idiomatic bash conditionals. Two specific patterns killed the script silently:
+
+1. `[ -f "$pd/learnings.jsonl" ] && cat "$pd/learnings.jsonl" >> "$_tmp_jsonl"` inside a while loop. When `[ -f ]` was false (the legacy `remax-hub-portal/` slug dir had no learnings.jsonl), the && short-circuited and the body returned 1. Loop's exit status carried that 1. `set -e` killed the function.
+
+2. `[ "$count" = "0" ] || [ -z "$count" ] && continue` in the symlink for-loop. Bash parses this as `( [A] || [B] ) && continue`. When BOTH tests are false (the success case — count is non-zero!), the compound returns false, `set -e` aborts.
+
+**Fix:** explicit `if/then/fi` for both. The "clever one-liner" forms are a landmine inside `set -e`.
+
+**The bats test didn't catch it** because the original fixture only had ONE project dir, WITH learnings.jsonl present. The failing paths never triggered. Real-world canary had two project dirs, asymmetric content. **Add a "asymmetric" or "missing-file" variant to fixtures wherever code branches on existence checks.**
+
 ### 2026-05-18 — major omission: gstack artifacts entirely missing from discover
 
 User flagged it directly during canary review: `~/.gstack/projects/myi1-remax-hub-portal/` has 94 entries (design docs, CEO plans, eng-review test plans, checkpoints, handoffs, structured learnings, session timeline, deploys log) plus an older `~/.gstack/projects/remax-hub-portal/` slug with 6 more. My discover saw zero of them because it only scanned the current repo's tracked files.

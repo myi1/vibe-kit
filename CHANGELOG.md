@@ -2,6 +2,21 @@
 
 All notable changes to vibe-kit are documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-pre.4] — 2026-05-18 (`set -e` traps in scaffolder)
+
+Caught when actually applying Tier 2 to canary on a fresh branch off `origin/main`. The script silently exited mid-`_scaffold_gstack_reference` and never reached `cmd_write_version`, leaving the canary half-retrofitted (no .vibe-kit-version, empty learnings.md, no symlinks).
+
+### Fixed
+- **Bug 9: `[ -f x ] && cat x >> y` in the learnings-collection loop killed the script under `set -e`.** Canary has 2 gstack project dirs (current slug + legacy basename) — the legacy one lacks `learnings.jsonl`. That iteration's body returned non-zero, became the loop's exit status, and `set -e` aborted the function. Replaced with an explicit `if [ -f x ]; then cat ...; fi` so the loop body always exits 0.
+- **Bug 10: `[ A ] || [ B ] && continue` in the symlink for-loop killed the script even on the success path.** Bash evaluates this as `( [A] || [B] ) && continue`. When neither test fires (count is non-zero — the case we want to proceed), the compound returns false, `set -e` aborts. Replaced with explicit `if ... then continue; fi`.
+
+### Tests
+- New regression test (`tier 2: gstack scaffold survives set-e when a legacy project_dir lacks learnings.jsonl`) — would have caught bug 9 + 10. The original test 34 only covered the single-project-dir-with-everything case.
+- Suite: 37 green.
+
+### Lesson
+- `set -e` + idiomatic bash conditionals (`[ X ] && Y`, `[ A ] || [ B ] && C`) are a classic landmine. Inside a loop or function, the compound's exit status becomes the loop/function's, and `set -e` silently kills the parent. **In any script using `set -e`, always use explicit `if/then/fi`** for conditional execution inside loops and functions. The "clever one-liner" forms are a trap.
+
 ## [0.1.0-pre.3] — 2026-05-18 (version-sync + empty-command fallback)
 
 Caught by Tier 2 dry-run on canary before applying.

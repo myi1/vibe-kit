@@ -432,6 +432,50 @@ EOF
   # Symlinks exist
   [ -L docs/vibe-kit/reference/gstack-designs/yahya-main-design-20260518.md ]
   [ -L docs/vibe-kit/reference/gstack-ceo-plans/2026-05-18-sample.md ]
+  # .vibe-kit-version was written (proves scaffold-gstack-reference returned 0
+  # and the orchestrator continued to cmd_write_version)
+  [ -f .vibe-kit-version ]
+}
+
+@test "tier 2: gstack scaffold survives set-e when a legacy project_dir lacks learnings.jsonl" {
+  # Regression for bug 9 + 10: canary had TWO project_dirs (myi1-remax-hub-portal
+  # WITH learnings.jsonl, AND legacy remax-hub-portal WITHOUT learnings.jsonl).
+  # Old code: `[ -f x ] && cat ...` failed on legacy dir, set -e killed the
+  # script mid-_scaffold_gstack_reference. Result: empty learnings.md, no
+  # symlinks, no .vibe-kit-version.
+  _load_fixture with-gstack-history
+  local fake_gstack="$TMPDIR/.fake-gstack"
+  local basename_slug
+  basename_slug=$(basename "$TMPDIR" | tr -cd 'a-zA-Z0-9._-')
+
+  # Project dir 1: current slug — full content
+  mkdir -p "$fake_gstack/projects/$basename_slug/ceo-plans"
+  echo "# design current" > "$fake_gstack/projects/$basename_slug/yahya-design-current.md"
+  printf '{"skill":"a","key":"K1","insight":"i1","confidence":9}\n' > "$fake_gstack/projects/$basename_slug/learnings.jsonl"
+
+  # Project dir 2: a "legacy" sibling slug that ALSO matches — has a design
+  # but NO learnings.jsonl. The discover scan picks up both via basename
+  # fallback (when slug_current and slug_basename differ).
+  # Since this fixture has no git remote, slug_current == slug_basename, so to
+  # simulate the two-dir case we need to create an additional dir at the SAME
+  # basename slug AND make sure discover finds it. The simplest reproduction:
+  # use a multi-line jsonl. Actually a cleaner repro: create a second project
+  # dir that doesn't have learnings.jsonl — but discover won't find it.
+  # Workaround: drop a second design in the same dir, and DELETE the lonely
+  # learnings.jsonl. We still want the file iteration to run with NO learnings.
+  rm "$fake_gstack/projects/$basename_slug/learnings.jsonl"
+
+  GSTACK_HOME="$fake_gstack" run "$VIBE_RETROFIT" tier 2
+  [ "$status" -eq 0 ]
+  # Even with no learnings.jsonl present, scaffolding must complete:
+  [ -f docs/vibe-kit/reference/README.md ]
+  [ -f docs/vibe-kit/reference/gstack-learnings.md ]
+  grep -q "No learnings entries found" docs/vibe-kit/reference/gstack-learnings.md
+  # Symlinks for the design we did create must exist (proves the for-loop
+  # didn't die mid-stride)
+  [ -L docs/vibe-kit/reference/gstack-designs/yahya-design-current.md ]
+  # And the orchestrator reached cmd_write_version (proves no premature exit)
+  [ -f .vibe-kit-version ]
 }
 
 @test "discover: stdout summary doesn't print stray '0' when libs is empty" {

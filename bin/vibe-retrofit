@@ -1098,10 +1098,19 @@ _scaffold_gstack_reference() {
     echo "Read this at the start of a new session. Each entry is a piece of institutional knowledge — a pattern, pitfall, or convention — that someone (often past-you) wrote down so future agents don't have to relearn it."
     echo ""
 
-    # Collect all entries, dedup by key (keep highest confidence), sort by confidence desc
+    # Collect all entries, dedup by key (keep highest confidence), sort by confidence desc.
+    # NOTE: bash `set -e` semantics: the loop body MUST always exit 0, otherwise
+    # the loop's exit status (= last iteration's exit status) becomes non-zero
+    # and set -e silently kills the function mid-stride. The canary surfaced
+    # this when the legacy `remax-hub-portal/` slug dir lacked learnings.jsonl
+    # — `[ -f x ] && cat ...` exited 1 on that iteration, killed the script,
+    # and the entire function aborted with no error message. Use an explicit
+    # `if` so the body always exits 0.
     local _tmp_jsonl; _tmp_jsonl="$(mktemp)"
     jq -r '.gstack.project_dirs[]' "$json_path" 2>/dev/null | while IFS= read -r pd; do
-      [ -f "$pd/learnings.jsonl" ] && cat "$pd/learnings.jsonl" >> "$_tmp_jsonl"
+      if [ -f "$pd/learnings.jsonl" ]; then
+        cat "$pd/learnings.jsonl" >> "$_tmp_jsonl"
+      fi
     done
 
     if [ -s "$_tmp_jsonl" ]; then
@@ -1135,7 +1144,12 @@ _scaffold_gstack_reference() {
     # Count entries first
     local count
     count="$(jq -r ".gstack.${jq_field} | length" "$json_path" 2>/dev/null)"
-    [ "$count" = "0" ] || [ -z "$count" ] && continue
+    # NOTE: `[ A ] || [ B ] && continue` evaluates as `( [A] || [B] ) && continue`
+    # which under set -e dies when count is non-zero (the success case!) because
+    # the compound's exit code is the false `&&` short-circuit. Use explicit if.
+    if [ "$count" = "0" ] || [ -z "$count" ]; then
+      continue
+    fi
     mkdir -p "$refdir/$subname"
     local target name
     jq -r ".gstack.${jq_field}[]" "$json_path" 2>/dev/null | while IFS= read -r target; do
