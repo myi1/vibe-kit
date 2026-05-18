@@ -269,6 +269,71 @@ $root_md"
   local has_todos_md="no"
   [ -f TODOS.md ] || [ -f TODO.md ] || [ -f BACKLOG.md ] && has_todos_md="yes"
 
+  # 7. gstack artifacts. Resolves both the current slug (via gstack-slug, which
+  # parses git remote → "owner-repo") AND the legacy basename slug (older
+  # gstack versions stored under just the repo name). Catalogs files by type
+  # at the project dir + standard subdirectories (ceo-plans/, checkpoints/).
+  # All output paths in the JSON are ABSOLUTE so the skill / scaffold step can
+  # read or symlink them directly.
+  local gstack_home="${GSTACK_HOME:-$HOME/.gstack}"
+  local slug_current=""
+  local slug_basename
+  slug_basename="$(basename "$PWD" | tr -cd 'a-zA-Z0-9._-')"
+  if [ -x "$HOME/.claude/skills/gstack/bin/gstack-slug" ]; then
+    # gstack-slug writes a cache file via mkdir+mv inside a subshell; tolerate
+    # any failure (we just need SLUG=...).
+    local _slug_out
+    _slug_out="$("$HOME/.claude/skills/gstack/bin/gstack-slug" 2>/dev/null || true)"
+    slug_current="$(printf '%s' "$_slug_out" | grep '^SLUG=' | head -1 | cut -d= -f2 | tr -cd 'a-zA-Z0-9._-')"
+  fi
+
+  local gstack_paths=""
+  local s p
+  for s in "$slug_current" "$slug_basename"; do
+    [ -z "$s" ] && continue
+    p="$gstack_home/projects/$s"
+    [ -d "$p" ] || continue
+    case " $gstack_paths " in *" $p "*) ;; *) gstack_paths="$gstack_paths $p" ;; esac
+  done
+
+  local g_designs="" g_test_plans="" g_ceo_plans="" g_checkpoints=""
+  local g_handoffs="" g_autoplans="" g_other_md=""
+  local g_reviews_count=0 g_learnings_count=0 g_timeline_count=0 g_deploys_count=0
+  for p in $gstack_paths; do
+    local _files
+    # Root-level .md classified by name pattern
+    _files="$(find "$p" -maxdepth 1 -name '*-design-*.md' -type f 2>/dev/null || true)"
+    [ -n "$_files" ] && g_designs="${g_designs:+$g_designs
+}$_files"
+    _files="$(find "$p" -maxdepth 1 -name '*-eng-review-test-plan-*.md' -type f 2>/dev/null || true)"
+    [ -n "$_files" ] && g_test_plans="${g_test_plans:+$g_test_plans
+}$_files"
+    _files="$(find "$p" -maxdepth 1 -name '*-autoplan-*.md' -type f 2>/dev/null || true)"
+    [ -n "$_files" ] && g_autoplans="${g_autoplans:+$g_autoplans
+}$_files"
+    _files="$(find "$p" -maxdepth 1 -name 'handoff*.md' -type f 2>/dev/null || true)"
+    [ -n "$_files" ] && g_handoffs="${g_handoffs:+$g_handoffs
+}$_files"
+    # Subdirectories
+    _files="$(find "$p/ceo-plans" -maxdepth 1 -name '*.md' -type f 2>/dev/null || true)"
+    [ -n "$_files" ] && g_ceo_plans="${g_ceo_plans:+$g_ceo_plans
+}$_files"
+    _files="$(find "$p/checkpoints" -maxdepth 1 -name '*.md' -type f 2>/dev/null || true)"
+    [ -n "$_files" ] && g_checkpoints="${g_checkpoints:+$g_checkpoints
+}$_files"
+    # Counts
+    if [ -f "$p/learnings.jsonl" ]; then
+      g_learnings_count=$(( g_learnings_count + $(wc -l < "$p/learnings.jsonl" 2>/dev/null | tr -d ' ' || echo 0) ))
+    fi
+    if [ -f "$p/timeline.jsonl" ]; then
+      g_timeline_count=$(( g_timeline_count + $(wc -l < "$p/timeline.jsonl" 2>/dev/null | tr -d ' ' || echo 0) ))
+    fi
+    if [ -f "$p/deploys.jsonl" ]; then
+      g_deploys_count=$(( g_deploys_count + $(wc -l < "$p/deploys.jsonl" 2>/dev/null | tr -d ' ' || echo 0) ))
+    fi
+    g_reviews_count=$(( g_reviews_count + $(find "$p" -maxdepth 1 -name '*-reviews.jsonl' -type f 2>/dev/null | wc -l | tr -d ' ') ))
+  done
+
   # ── Build JSON report (machine-readable for the skill) ──────────────────
   # Build a JSON document with jq for safety. Convert newline-separated lists
   # to JSON arrays.
@@ -288,6 +353,19 @@ $root_md"
     --arg has_taskmaster "$has_taskmaster" \
     --arg has_todos_md "$has_todos_md" \
     --arg todo_raw "$todo_raw" \
+    --arg gstack_paths "$gstack_paths" \
+    --arg gstack_slug_current "$slug_current" \
+    --arg gstack_slug_basename "$slug_basename" \
+    --arg g_designs "$g_designs" \
+    --arg g_test_plans "$g_test_plans" \
+    --arg g_ceo_plans "$g_ceo_plans" \
+    --arg g_checkpoints "$g_checkpoints" \
+    --arg g_handoffs "$g_handoffs" \
+    --arg g_autoplans "$g_autoplans" \
+    --argjson g_reviews_count "$g_reviews_count" \
+    --argjson g_learnings_count "$g_learnings_count" \
+    --argjson g_timeline_count "$g_timeline_count" \
+    --argjson g_deploys_count "$g_deploys_count" \
     '{
       vibe_kit_version: $ver,
       generated_at: $ts,
@@ -306,6 +384,21 @@ $root_md"
       existing_state: {
         taskmaster: $has_taskmaster,
         todos_md: $has_todos_md
+      },
+      gstack: {
+        slug_current: $gstack_slug_current,
+        slug_basename: $gstack_slug_basename,
+        project_dirs: ($gstack_paths | split(" ") | map(select(length > 0))),
+        designs: ($g_designs | split("\n") | map(select(length > 0))),
+        test_plans: ($g_test_plans | split("\n") | map(select(length > 0))),
+        ceo_plans: ($g_ceo_plans | split("\n") | map(select(length > 0))),
+        checkpoints: ($g_checkpoints | split("\n") | map(select(length > 0))),
+        handoffs: ($g_handoffs | split("\n") | map(select(length > 0))),
+        autoplans: ($g_autoplans | split("\n") | map(select(length > 0))),
+        reviews_jsonl_count: $g_reviews_count,
+        learnings_count: $g_learnings_count,
+        timeline_count: $g_timeline_count,
+        deploys_count: $g_deploys_count
       }
     }')"
 
@@ -370,6 +463,60 @@ $root_md"
     echo "- Taskmaster initialized: **$has_taskmaster**"
     echo "- TODOS.md / TODO.md / BACKLOG.md present: **$has_todos_md**"
     echo ""
+    echo "## gstack history"
+    echo ""
+    if [ -n "$gstack_paths" ]; then
+      echo "Found existing gstack artifacts for this repo. **This is the load-bearing scattered context you've been writing over the past sessions** — design docs from /office-hours, CEO plans, eng-review test plans, checkpoints, handoff notes, structured learnings, session timeline. The retrofit will symlink the most useful ones under \`docs/vibe-kit/reference/\` and convert \`learnings.jsonl\` to a human-readable index."
+      echo ""
+      echo "- **Slug(s) checked:** \`${slug_current:-(none)}\` (current) + \`${slug_basename}\` (legacy basename)"
+      echo "- **Project dirs found:**"
+      for p in $gstack_paths; do echo "  - \`$p\`"; done
+      echo ""
+      local _d_count=0 _t_count=0 _c_count=0 _ck_count=0 _h_count=0 _a_count=0
+      [ -n "$g_designs" ] && _d_count="$(printf '%s' "$g_designs" | grep -c . || echo 0)"
+      [ -n "$g_test_plans" ] && _t_count="$(printf '%s' "$g_test_plans" | grep -c . || echo 0)"
+      [ -n "$g_ceo_plans" ] && _c_count="$(printf '%s' "$g_ceo_plans" | grep -c . || echo 0)"
+      [ -n "$g_checkpoints" ] && _ck_count="$(printf '%s' "$g_checkpoints" | grep -c . || echo 0)"
+      [ -n "$g_handoffs" ] && _h_count="$(printf '%s' "$g_handoffs" | grep -c . || echo 0)"
+      [ -n "$g_autoplans" ] && _a_count="$(printf '%s' "$g_autoplans" | grep -c . || echo 0)"
+      echo "**Counts:**"
+      echo "- Design docs (\`*-design-*.md\`): **$_d_count**"
+      echo "- Eng-review test plans (\`*-eng-review-test-plan-*.md\`): **$_t_count**"
+      echo "- CEO plans (\`ceo-plans/*.md\`): **$_c_count**"
+      echo "- Checkpoints (\`checkpoints/*.md\`): **$_ck_count**"
+      echo "- Handoff notes (\`handoff*.md\`): **$_h_count**"
+      echo "- Autoplan snapshots (\`*-autoplan-*.md\`): **$_a_count**"
+      echo "- Reviews JSONL files (\`*-reviews.jsonl\`): **$g_reviews_count**"
+      echo "- Learnings entries (\`learnings.jsonl\` lines): **$g_learnings_count**"
+      echo "- Timeline entries (\`timeline.jsonl\` lines): **$g_timeline_count**"
+      echo "- Deploys logged (\`deploys.jsonl\` lines): **$g_deploys_count**"
+      echo ""
+      # List a few sample paths so user can read directly
+      if [ "$_d_count" -gt 0 ]; then
+        echo "**Recent design docs (sample):**"
+        printf '%s\n' "$g_designs" | sort -r | head -5 | while IFS= read -r f; do
+          [ -n "$f" ] && echo "- \`$f\`"
+        done
+        echo ""
+      fi
+      if [ "$_c_count" -gt 0 ]; then
+        echo "**CEO plans:**"
+        printf '%s\n' "$g_ceo_plans" | sort -r | head -5 | while IFS= read -r f; do
+          [ -n "$f" ] && echo "- \`$f\`"
+        done
+        echo ""
+      fi
+      if [ "$_h_count" -gt 0 ]; then
+        echo "**Recent handoff notes:**"
+        printf '%s\n' "$g_handoffs" | sort -r | head -3 | while IFS= read -r f; do
+          [ -n "$f" ] && echo "- \`$f\`"
+        done
+        echo ""
+      fi
+    else
+      echo "_No gstack artifacts found at \`$gstack_home/projects/${slug_current:-?}\` or \`$gstack_home/projects/${slug_basename}\`. This is either a brand-new repo or one you've never run gstack skills against._"
+      echo ""
+    fi
     echo "---"
     echo ""
     echo "_Read this report before running \`vibe-retrofit tier 1/2/3\`. It is the input that distinguishes a smart retrofit from a dumb one._"
@@ -397,6 +544,19 @@ $root_md"
     "$(if [ "$has_taskmaster" = "yes" ]; then echo "$C_GREEN"; else echo "$C_DIM"; fi)" "$has_taskmaster" "$C_RESET" \
     "$C_DIM" "$C_RESET" \
     "$(if [ "$has_todos_md" = "yes" ]; then echo "$C_GREEN"; else echo "$C_DIM"; fi)" "$has_todos_md" "$C_RESET"
+  # gstack history row (only when found)
+  if [ -n "$gstack_paths" ]; then
+    local _gs_total=0
+    _gs_total=$(( $(printf '%s' "$g_designs" | grep -c . || true) + \
+                  $(printf '%s' "$g_test_plans" | grep -c . || true) + \
+                  $(printf '%s' "$g_ceo_plans" | grep -c . || true) + \
+                  $(printf '%s' "$g_checkpoints" | grep -c . || true) + \
+                  $(printf '%s' "$g_handoffs" | grep -c . || true) + \
+                  $(printf '%s' "$g_autoplans" | grep -c . || true) ))
+    printf "  %bgstack:%b    %s%s%b artifacts  (learnings=%s, timeline=%s, deploys=%s)\n" \
+      "$C_DIM" "$C_RESET" "$C_GREEN" "$_gs_total" "$C_RESET" \
+      "$g_learnings_count" "$g_timeline_count" "$g_deploys_count"
+  fi
   printf "%b└──────────────────────────────────────────────────────────┘%b\n\n" "$C_BOLD" "$C_RESET"
 
   _ok "Wrote $md_path"
@@ -841,6 +1001,7 @@ cmd_tier() {
       # only handles deterministic merges. If skill didn't run, fall back to
       # bare template copy.
       _scaffold_docs_bare "$@"
+      _scaffold_gstack_reference "$@"
       cmd_write_version --tier 2 "$@"
       _ok "Tier 2 retrofit complete."
       ;;
@@ -849,6 +1010,7 @@ cmd_tier() {
       cmd_discover
       cmd_merge_claude_md "$@"
       _scaffold_docs_bare "$@"
+      _scaffold_gstack_reference "$@"
       cmd_init_taskmaster "$@"
       cmd_write_version --tier 3 "$@"
       _ok "Tier 3 retrofit complete."
@@ -857,6 +1019,127 @@ cmd_tier() {
       _die "Unknown tier: $tier. Use 1, 2, or 3."
       ;;
   esac
+}
+
+# Helper: build docs/vibe-kit/reference/ from discovered gstack artifacts.
+# Creates:
+#   docs/vibe-kit/reference/README.md         — explains what's here
+#   docs/vibe-kit/reference/gstack-learnings.md — formatted from learnings.jsonl
+#   docs/vibe-kit/reference/gstack-designs/    — symlinks to design docs
+#   docs/vibe-kit/reference/gstack-ceo-plans/  — symlinks to ceo-plans/
+#   docs/vibe-kit/reference/gstack-handoffs/   — symlinks to handoff notes
+#   docs/vibe-kit/reference/gstack-checkpoints/ — symlinks to checkpoints/
+#
+# Symlinks use absolute paths (these are local-machine refs, not portable).
+# Skipped silently if no gstack artifacts in discovery JSON.
+_scaffold_gstack_reference() {
+  local dry_run=0
+  for arg in "$@"; do
+    [ "$arg" = "--dry-run" ] && dry_run=1
+  done
+
+  local json_path; json_path="$(_report_json_path)"
+  [ -f "$json_path" ] || return 0
+
+  # Check if there are any gstack artifacts at all
+  local has_any
+  has_any="$(jq -r '
+    if (.gstack.project_dirs | length) == 0 then "no" else "yes" end
+  ' "$json_path" 2>/dev/null)"
+  if [ "$has_any" != "yes" ]; then
+    return 0
+  fi
+
+  local refdir="docs/vibe-kit/reference"
+  if [ "$dry_run" -eq 1 ]; then
+    _info "  → WOULD CREATE: $refdir/ (gstack symlinks + learnings.md)"
+    return 0
+  fi
+  mkdir -p "$refdir"
+
+  # ── README explaining the reference layout ──────────────────────────────
+  {
+    echo "# Reference index"
+    echo ""
+    echo "Auto-generated by \`vibe-retrofit tier 2+\` from gstack artifacts found at:"
+    jq -r '.gstack.project_dirs[] | "- `" + . + "`"' "$json_path" 2>/dev/null
+    echo ""
+    echo "## What's here"
+    echo ""
+    echo "- **\`gstack-learnings.md\`** — flattened, deduped, confidence-sorted view of all \`learnings.jsonl\` entries from gstack sessions on this repo. Read this when starting a new session — it's the institutional knowledge future-you keeps relearning."
+    echo "- **\`gstack-designs/\`** — symlinks to design docs (\`*-design-*.md\`) authored via /office-hours."
+    echo "- **\`gstack-ceo-plans/\`** — symlinks to CEO plan docs (\`ceo-plans/*.md\`) authored via /plan-ceo-review."
+    echo "- **\`gstack-checkpoints/\`** — symlinks to context-save snapshots."
+    echo "- **\`gstack-handoffs/\`** — symlinks to handoff notes between sessions."
+    echo ""
+    echo "## Caveat: symlinks are absolute"
+    echo ""
+    echo "These symlinks point to absolute paths under \`\$HOME/.gstack/projects/\` on the machine where retrofit was run. They will break on another machine. If you sync this repo across machines, treat the symlinks as machine-local references — re-run \`vibe-retrofit tier 2\` on each machine to regenerate them."
+  } > "$refdir/README.md"
+
+  # ── Format learnings.jsonl into human-readable markdown ──────────────────
+  # Find all learnings.jsonl across discovered project dirs, dedup by key,
+  # sort by confidence desc, write to gstack-learnings.md.
+  local learnings_md="$refdir/gstack-learnings.md"
+  {
+    echo "# gstack learnings — $(basename "$(pwd)")"
+    echo ""
+    echo "Auto-generated from gstack \`learnings.jsonl\` entries. Sorted by confidence desc. Deduped by \`key\` (highest-confidence entry wins on collision)."
+    echo ""
+    echo "Read this at the start of a new session. Each entry is a piece of institutional knowledge — a pattern, pitfall, or convention — that someone (often past-you) wrote down so future agents don't have to relearn it."
+    echo ""
+
+    # Collect all entries, dedup by key (keep highest confidence), sort by confidence desc
+    local _tmp_jsonl; _tmp_jsonl="$(mktemp)"
+    jq -r '.gstack.project_dirs[]' "$json_path" 2>/dev/null | while IFS= read -r pd; do
+      [ -f "$pd/learnings.jsonl" ] && cat "$pd/learnings.jsonl" >> "$_tmp_jsonl"
+    done
+
+    if [ -s "$_tmp_jsonl" ]; then
+      # Sort by confidence desc, dedup by key (jq does this in two passes)
+      jq -s '
+        group_by(.key) | map(sort_by(.confidence // 0) | last) | sort_by(-(.confidence // 0))
+        | .[] |
+          "## \(.key)  ·  confidence \(.confidence // "?")/10  ·  \(.type // "?")\n\n" +
+          "**Skill:** `\(.skill // "?")`  ·  **Source:** \(.source // "?")  ·  **Logged:** \(.ts // "?")\n\n" +
+          "\(.insight // "(no insight text)")\n\n" +
+          (if (.files // []) | length > 0 then "**Files:** " + ((.files // []) | map("`\(.)`") | join(", ")) + "\n\n" else "" end) +
+          "---\n"
+      ' "$_tmp_jsonl" 2>/dev/null || echo "_(failed to parse learnings.jsonl — file may be malformed)_"
+    else
+      echo "_No learnings entries found. The first \`/learn\` invocation will create one._"
+    fi
+    rm -f "$_tmp_jsonl"
+  } > "$learnings_md"
+  _ok "  → wrote $learnings_md"
+
+  # ── Symlink design / ceo-plans / checkpoints / handoffs ─────────────────
+  local subname jq_field
+  for pair in "gstack-designs:designs" \
+              "gstack-ceo-plans:ceo_plans" \
+              "gstack-checkpoints:checkpoints" \
+              "gstack-handoffs:handoffs" \
+              "gstack-autoplans:autoplans" \
+              "gstack-test-plans:test_plans"; do
+    subname="${pair%%:*}"
+    jq_field="${pair##*:}"
+    # Count entries first
+    local count
+    count="$(jq -r ".gstack.${jq_field} | length" "$json_path" 2>/dev/null)"
+    [ "$count" = "0" ] || [ -z "$count" ] && continue
+    mkdir -p "$refdir/$subname"
+    local target name
+    jq -r ".gstack.${jq_field}[]" "$json_path" 2>/dev/null | while IFS= read -r target; do
+      [ -z "$target" ] && continue
+      [ ! -e "$target" ] && continue
+      name="$(basename "$target")"
+      # Only create symlink if not already there (idempotent)
+      if [ ! -L "$refdir/$subname/$name" ] && [ ! -e "$refdir/$subname/$name" ]; then
+        ln -s "$target" "$refdir/$subname/$name" 2>/dev/null || true
+      fi
+    done
+    _ok "  → linked $count files into $refdir/$subname/"
+  done
 }
 
 # Helper: scaffold docs/vibe-kit/ from templates (bare — no skill enrichment)

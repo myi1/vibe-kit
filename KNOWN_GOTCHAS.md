@@ -23,6 +23,19 @@ Ran `vibe-retrofit discover` on `~/Documents/GitHub/remax-hub-portal` (canary re
    - **Fix:** added heuristic — any root-level capitalized `.md` that isn't a standard project doc gets included.
    - **Regression test:** `test/fixtures/with-process-docs/` + 1 bats test.
 
+### 2026-05-18 — major omission: gstack artifacts entirely missing from discover
+
+User flagged it directly during canary review: `~/.gstack/projects/myi1-remax-hub-portal/` has 94 entries (design docs, CEO plans, eng-review test plans, checkpoints, handoffs, structured learnings, session timeline, deploys log) plus an older `~/.gstack/projects/remax-hub-portal/` slug with 6 more. My discover saw zero of them because it only scanned the current repo's tracked files.
+
+This was load-bearing scattered context the retrofit's whole premise is supposed to centralize. Missing it meant the retrofit would have shipped CLAUDE.md + scaffolds without any of the user's real institutional knowledge surfaced.
+
+**Lessons:**
+- The retrofit's "scattered context" framing must extend beyond the repo. Personal-workflow tools accumulate state in `~/.tool-name/projects/<slug>/`. Discovery has to know about those locations.
+- `gstack-slug` (or whatever the upstream tool uses) is the canonical slug. Re-deriving it elsewhere is wrong — always reuse the source-of-truth resolver. Plus check the basename fallback for legacy slug formats.
+- `learnings.jsonl` is the highest-value structured artifact. Formatting it into a readable markdown deduplicates institutional knowledge across sessions. The user's canary had a confidence-10 entry about `TWILIO_DEFAULT_TEAM_ID` convention that a fresh agent would otherwise relearn or violate.
+
+**Fix:** v0.1.0-pre.2 adds gstack scan + reference scaffolding. See CHANGELOG for full detail.
+
 ### 2026-05-18 — fix 2 then revealed bug 5 (cascading discovery)
 
 After fixing bugs 1-4 and re-running discover on canary, hit `Argument list too long` from `jq`. Investigation: only 13 TODO matches but 12.9 MB total output — because bug-2's broader globs now include `.html`, and the canary has minified single-line HTML legacy files (each ~1 MB) where one TODO match emits the entire file content.

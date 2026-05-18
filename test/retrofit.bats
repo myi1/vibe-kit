@@ -344,6 +344,82 @@ _load_fixture() {
   [[ "$output" == *"truncated"* ]]
 }
 
+@test "discover: gstack history surfaces under custom GSTACK_HOME" {
+  _load_fixture with-gstack-history
+  # Build a fake gstack home with a project dir matching the fixture basename.
+  # Discover uses the basename slug fallback when no git remote exists, which
+  # is the case for our test fixture (no remote configured).
+  local fake_gstack="$TMPDIR/.fake-gstack"
+  local basename_slug
+  basename_slug=$(basename "$TMPDIR" | tr -cd 'a-zA-Z0-9._-')
+  mkdir -p "$fake_gstack/projects/$basename_slug/ceo-plans"
+  mkdir -p "$fake_gstack/projects/$basename_slug/checkpoints"
+
+  # Drop in synthetic artifacts mirroring real gstack file patterns
+  cat > "$fake_gstack/projects/$basename_slug/yahya-main-design-20260518.md" <<'EOF'
+# Design: sample
+EOF
+  cat > "$fake_gstack/projects/$basename_slug/yahya-main-eng-review-test-plan-20260518.md" <<'EOF'
+# Test plan: sample
+EOF
+  cat > "$fake_gstack/projects/$basename_slug/ceo-plans/2026-05-18-sample.md" <<'EOF'
+# CEO plan: sample
+EOF
+  cat > "$fake_gstack/projects/$basename_slug/checkpoints/20260518-sample.md" <<'EOF'
+# Checkpoint: sample
+EOF
+  cat > "$fake_gstack/projects/$basename_slug/handoff-to-next-session.md" <<'EOF'
+# Handoff
+EOF
+  printf '{"skill":"a","key":"K1","insight":"i1","confidence":9}\n{"skill":"b","key":"K2","insight":"i2","confidence":7}\n' > "$fake_gstack/projects/$basename_slug/learnings.jsonl"
+  printf '{"skill":"x","event":"started"}\n{"skill":"y","event":"completed"}\n{"skill":"z","event":"completed"}\n' > "$fake_gstack/projects/$basename_slug/timeline.jsonl"
+
+  GSTACK_HOME="$fake_gstack" run "$VIBE_RETROFIT" discover
+  [ "$status" -eq 0 ]
+
+  # Verify catalog appears in JSON
+  count_designs=$(jq '.gstack.designs | length' .vibe-kit-discovery.json)
+  [ "$count_designs" -eq 1 ]
+  count_test_plans=$(jq '.gstack.test_plans | length' .vibe-kit-discovery.json)
+  [ "$count_test_plans" -eq 1 ]
+  count_ceo_plans=$(jq '.gstack.ceo_plans | length' .vibe-kit-discovery.json)
+  [ "$count_ceo_plans" -eq 1 ]
+  count_checkpoints=$(jq '.gstack.checkpoints | length' .vibe-kit-discovery.json)
+  [ "$count_checkpoints" -eq 1 ]
+  count_handoffs=$(jq '.gstack.handoffs | length' .vibe-kit-discovery.json)
+  [ "$count_handoffs" -eq 1 ]
+  learnings=$(jq '.gstack.learnings_count' .vibe-kit-discovery.json)
+  [ "$learnings" -eq 2 ]
+  timeline=$(jq '.gstack.timeline_count' .vibe-kit-discovery.json)
+  [ "$timeline" -eq 3 ]
+}
+
+@test "tier 2: scaffold-gstack-reference creates symlinks + gstack-learnings.md" {
+  _load_fixture with-gstack-history
+  local fake_gstack="$TMPDIR/.fake-gstack"
+  local basename_slug
+  basename_slug=$(basename "$TMPDIR" | tr -cd 'a-zA-Z0-9._-')
+  mkdir -p "$fake_gstack/projects/$basename_slug/ceo-plans"
+  echo "# design" > "$fake_gstack/projects/$basename_slug/yahya-main-design-20260518.md"
+  echo "# ceo" > "$fake_gstack/projects/$basename_slug/ceo-plans/2026-05-18-sample.md"
+  printf '{"skill":"a","key":"BIG_KEY","insight":"important institutional knowledge","confidence":10,"source":"observed","files":["src/foo.ts"]}\n' > "$fake_gstack/projects/$basename_slug/learnings.jsonl"
+
+  GSTACK_HOME="$fake_gstack" run "$VIBE_RETROFIT" tier 2
+  [ "$status" -eq 0 ]
+
+  # docs/vibe-kit/reference/ exists with all expected pieces
+  [ -d docs/vibe-kit/reference ]
+  [ -f docs/vibe-kit/reference/README.md ]
+  [ -f docs/vibe-kit/reference/gstack-learnings.md ]
+  # Learnings markdown contains the key + insight + confidence
+  grep -q "BIG_KEY" docs/vibe-kit/reference/gstack-learnings.md
+  grep -q "confidence 10/10" docs/vibe-kit/reference/gstack-learnings.md
+  grep -q "important institutional knowledge" docs/vibe-kit/reference/gstack-learnings.md
+  # Symlinks exist
+  [ -L docs/vibe-kit/reference/gstack-designs/yahya-main-design-20260518.md ]
+  [ -L docs/vibe-kit/reference/gstack-ceo-plans/2026-05-18-sample.md ]
+}
+
 @test "discover: stdout summary doesn't print stray '0' when libs is empty" {
   _load_fixture empty-repo
   run "$VIBE_RETROFIT" discover

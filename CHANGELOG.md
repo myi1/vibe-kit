@@ -2,6 +2,25 @@
 
 All notable changes to vibe-kit are documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-pre.2] — 2026-05-18 (gstack history surfacing)
+
+Second canary iteration. User flagged a major omission: `discover` was only scanning the current repo's tracked files, missing the **94 gstack artifacts** stored at `~/.gstack/projects/<slug>/` for the canary (design docs from `/office-hours`, CEO plans, eng-review test plans, checkpoints, handoff notes, structured learnings, session timeline, deploys log). These are the user's most load-bearing scattered context and skipping them defeats the retrofit's centralizing premise.
+
+### Added
+- **`gstack` field in discovery JSON.** Resolves both the current slug (via `~/.claude/skills/gstack/bin/gstack-slug`, which parses `git remote get-url origin` into `owner-repo`) and the legacy basename slug (older gstack versions stored under just the repo name). Catalogs files by type (designs, test_plans, ceo_plans, checkpoints, handoffs, autoplans) and counts JSONL artifacts (reviews, learnings, timeline, deploys). All paths are absolute so downstream consumers can symlink or read directly.
+- **"gstack history" section in the markdown discovery report.** Lists slug(s) checked, project dirs found, counts by artifact type, and sample paths (newest 5 designs, newest 5 CEO plans, newest 3 handoffs). User reads this before deciding tier.
+- **`_scaffold_gstack_reference` helper, invoked by Tier 2+.** Creates `docs/vibe-kit/reference/` containing:
+  - `README.md` explaining the layout + symlink caveat
+  - `gstack-learnings.md` — formatted from all `learnings.jsonl` entries across discovered project dirs, deduped by `key` (highest confidence wins on collision), sorted by confidence desc
+  - `gstack-designs/`, `gstack-ceo-plans/`, `gstack-checkpoints/`, `gstack-handoffs/`, `gstack-autoplans/`, `gstack-test-plans/` — absolute symlinks to source files
+- **`GSTACK_HOME` env var override** (already conventional in gstack itself). Lets tests + future cross-machine workflows point discover at non-default gstack roots.
+- **Stdout summary row for gstack.** When artifacts found, summary shows total artifact count + learnings/timeline/deploys counts inline.
+- 2 new bats tests (`discover: gstack history surfaces under custom GSTACK_HOME`, `tier 2: scaffold-gstack-reference creates symlinks + gstack-learnings.md`) + 1 new fixture (`with-gstack-history/`). Suite at 35 green.
+
+### Caveats
+- Symlinks use absolute paths. They will break on another machine. Re-run `vibe-retrofit tier 2` per-machine to regenerate. Documented in the auto-generated `docs/vibe-kit/reference/README.md`.
+- Cross-machine `gstack` artifact aggregation (e.g., scanning a Syncthing-synced folder from another machine) is deferred to a future release. Workaround: set `GSTACK_HOME` to a unified directory if you're already syncing one.
+
 ## [0.1.0-pre.1] — 2026-05-18 (canary fixes)
 
 Day-1 dogfooding on first canary repo (`myi1/remax-hub-portal`) surfaced five real bugs in `discover` that the bats fixtures didn't catch. All fixed + new regression tests added.
