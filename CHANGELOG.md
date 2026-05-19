@@ -2,6 +2,65 @@
 
 All notable changes to vibe-kit are documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] — 2026-05-19 (JP-style memory integration — vibe-kit speaks workspace-wide markdown + JSONL)
+
+**The schema landed.** JP (Mubbashir's OpenClaw agent) shipped the full memory architecture spec — workspace-wide layout under `memory/`, append-only JSONL for decisions/commitments/follow-ups with `confidential: bool` on every row, per-person markdown, daily journal, and the exact handoff record shape vibe-kit should emit. v0.7.1 wires it in.
+
+(Released BEFORE v0.8.0 in version number but AFTER in build order. v0.8.0 was the bug-reporting infrastructure which was independent; v0.7.1 is the JP integration that was blocked on the schema dump.)
+
+### Added
+
+- **`vibe-retrofit memory-format set jp-jsonl|vibe-kit-markdown|status`** — interactive wizard for opting in. `set jp-jsonl` prompts for `memory_dir` (default `~/workspace/memory` if exists), `operator_name` (default from `git config user.name`), and `confidential_paths` (default: `credentials/`, `vault/`, `.env*`, `*.key`, `*.pem`, `.confidential/`). Writes to `~/.vibe-kit/config.json`. `status` shows resolved values + precedence chain. Validates `memory_dir` exists before saving.
+
+- **`/vibe-wrap` branches on `memory_format`** — major skill rewrite. Detects mode at startup. For `jp-jsonl`:
+  - **Phase 0.5 (NEW): Peer prompt** — surfaces candidates from `<memory_dir>/people/*.md` + accepts free text. Drives session filepath and gets written into every JSONL row.
+  - **Phase 2b (NEW): commitments.jsonl as task surface** when no `.taskmaster/`. Read open commitments, ask which are done, mark by APPENDING new `status:done` rows (JP's append-only discipline — never edit in place).
+  - **Phase 4b (NEW): Dual-write handoff** — markdown prose to `<memory_dir>/sessions/<peer>/<session-id>-<date>.md` AND structured JSONL deltas appended to `<memory_dir>/{decisions,commitments,follow-ups}.jsonl`. Each row gets `ts`, `source: "vibe-kit"`, `by: <operator_name>`, `peer`, `repo`, `confidential: bool`, plus shape-specific fields matching JP's schema exactly.
+  - **Phase 4c (NEW): Daily-line append** to `<memory_dir>/YYYY-MM-DD.md` (jp-jsonl) or `<handoff_dir>/daily/YYYY-MM-DD.md` (default mode).
+  - **JSON validation per row** — `jq -e` before append. Broken rows go to `~/.vibe-kit/bug-reports/jsonl-validation-<ts>.json` instead of corrupting JP's append-only file.
+
+- **Pattern 3 (Auto-confidential) implemented** — scans handoff's file scope, matches against configured `confidential_paths`, sets `confidential: true` on every JSONL row + frontmatter on markdown. Both modes.
+
+- **Pattern 5 (Daily-line summary) implemented** — see Phase 4c above. Two daily-log locations depending on mode.
+
+### Changed
+
+- Skill description updated to mention both memory formats and the per-peer dimension.
+- Help text + CLI dispatch updated for the new `memory-format` subcommand.
+
+### What stays the same (vibe-kit-markdown mode, the default)
+
+Zero regression. `/vibe-wrap` in default mode behaves exactly as v0.5.0 shipped: per-repo handoffs under `~/.vibe-kit/projects/<key>/handoffs/`, Taskmaster as the task surface, KNOWN_GOTCHAS at repo root. The mode branch only activates when user opts in via the wizard.
+
+### JP integration verification
+
+Smoke tested the wizard: writes config correctly, validates memory_dir, surfaces values via `status` with full precedence chain, reverts cleanly. End-to-end /vibe-wrap flow against the jp-jsonl format requires real session context; will validate on Mubbashir's first actual use.
+
+### Migration
+
+For Mubbashir (or anyone on a JP-style setup):
+
+```bash
+cd ~/dev/vibe-kit && git pull && bash bin/install.sh
+vibe-retrofit memory-format set jp-jsonl
+# answer wizard prompts: memory_dir, operator_name, confidential_paths
+# then run /vibe-wrap at end-of-session as usual
+```
+
+For default users: nothing changes. Continue as before.
+
+### What's deferred
+
+- **MEMORY.md / INDEX.md surfacing in SessionStart hook** (Pattern 6) — needs more design on score function + cross-project surfacing.
+- **`people/<name>.md` auto-append** — appending checkboxes for new commitments per session needs idempotency thinking.
+- **WhatsApp history integration** via `tools/search_chat.py` — separate concern, v0.9+ if needed.
+- **`$OPENCLAW_SESSION` batch-and-relay** (Pattern 4 reference impl) — independent of jp-jsonl. v0.8.x.
+- **Bidirectional confidential-check sync** — JP's pre-send hook (`15-confidentiality-check.mjs`) and vibe-kit's auto-confidential could share a path list; deferred.
+
+### Posture
+
+This release is the integration JP designed for in the schema dump. Every JSONL row vibe-kit emits matches the shapes JP showed (decisions: `{ts, decision, by, scope, ...}`; commitments: `{ts, to, what, due, status}`; follow-ups: `{ts, what, with, due, status}`), plus the universal `confidential: bool` and a `source: "vibe-kit"` tag so JP can filter vibe-kit-emitted rows downstream if needed. The handoff markdown lands where JP's indexer will pick it up on the next 15-min cron pass.
+
 ## [0.8.0] — 2026-05-19 (/vibe-bug — close the loop on real-world misfires)
 
 **The problem this closes:** when a vibe-kit skill or hook misbehaves in real use, the agent either silently works around it (good for the session, terrible for vibe-kit's quality), apologizes and asks the user to file something manually (user forgets), or reports it in chat (user forgets five turns later). Bugs that should reach the maintainer don't. v0.8.0 builds the reporting path.

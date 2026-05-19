@@ -916,6 +916,173 @@ Then retry."
 }
 
 # ────────────────────────────────────────────────────────────────────────────
+# cmd: memory-format (v0.7.1)
+# JP-jsonl integration. Workspace-memory shops opt in via this command;
+# .vibe-wrap then writes handoffs as both prose markdown AND structured
+# JSONL deltas into the JP-style memory/ tree.
+#
+# Usage:
+#   vibe-retrofit memory-format set jp-jsonl       # interactive opt-in
+#   vibe-retrofit memory-format set vibe-kit-markdown   # revert to default
+#   vibe-retrofit memory-format status             # show resolved values + source
+# ────────────────────────────────────────────────────────────────────────────
+
+# Resolve current memory_format mode (env > global > per-repo > default)
+_memory_format_mode() {
+  local m
+  m="${VIBE_KIT_MEMORY_FORMAT:-}"
+  if [ -n "$m" ]; then echo "$m"; return; fi
+  if [ -f "$HOME/.vibe-kit/config.json" ]; then
+    m=$(jq -r '.memory_format // ""' "$HOME/.vibe-kit/config.json" 2>/dev/null)
+    if [ -n "$m" ] && [ "$m" != "null" ] && [ "$m" != "" ]; then echo "$m"; return; fi
+  fi
+  if [ -f .vibe-kit-version ]; then
+    m=$(jq -r '.memory_format // ""' .vibe-kit-version 2>/dev/null)
+    if [ -n "$m" ] && [ "$m" != "null" ] && [ "$m" != "" ]; then echo "$m"; return; fi
+  fi
+  echo "vibe-kit-markdown"
+}
+
+cmd_memory_format() {
+  local action="${1:-status}"; shift 2>/dev/null || true
+  local cfg="$HOME/.vibe-kit/config.json"
+
+  case "$action" in
+    set)
+      local target="${1:-}"
+      [ -z "$target" ] && _die "Usage: vibe-retrofit memory-format set {jp-jsonl|vibe-kit-markdown}"
+      case "$target" in
+        vibe-kit-markdown)
+          mkdir -p "$HOME/.vibe-kit"
+          [ -f "$cfg" ] || echo "{}" > "$cfg"
+          local tmp; tmp="$(mktemp)"
+          jq '. + {memory_format: "vibe-kit-markdown"} | del(.memory_dir, .operator_name, .confidential_paths)' "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+          _ok "memory_format = vibe-kit-markdown (default)"
+          echo "  /vibe-wrap writes to ~/.vibe-kit/projects/<key>/handoffs/"
+          ;;
+        jp-jsonl)
+          _memory_format_setup_jp_jsonl
+          ;;
+        *)
+          _die "Unknown format '$target'. Valid: jp-jsonl, vibe-kit-markdown"
+          ;;
+      esac
+      ;;
+    status)
+      local mode; mode="$(_memory_format_mode)"
+      echo "memory_format: $mode"
+      if [ "$mode" = "jp-jsonl" ]; then
+        local md od cp
+        md=$(jq -r '.memory_dir // "(unset)"' "$cfg" 2>/dev/null)
+        od=$(jq -r '.operator_name // "(unset)"' "$cfg" 2>/dev/null)
+        cp=$(jq -r '.confidential_paths // [] | join(", ")' "$cfg" 2>/dev/null)
+        echo "  memory_dir:         $md"
+        echo "  operator_name:      $od"
+        echo "  confidential_paths: $cp"
+        if [ "$md" != "(unset)" ] && [ "$md" != "null" ]; then
+          if [ -d "$md" ]; then
+            echo "  memory_dir status:  exists ✓"
+          else
+            echo "  memory_dir status:  MISSING (set jp-jsonl will refuse to write there)"
+          fi
+        fi
+      else
+        echo "  /vibe-wrap writes to ~/.vibe-kit/projects/<key>/handoffs/"
+      fi
+      echo ""
+      echo "Resolution chain (highest precedence first):"
+      echo "  1. \$VIBE_KIT_MEMORY_FORMAT=${VIBE_KIT_MEMORY_FORMAT:-(unset)}"
+      if [ -f "$cfg" ]; then
+        local g; g=$(jq -r '.memory_format // "(unset)"' "$cfg" 2>/dev/null)
+        echo "  2. $cfg memory_format=$g"
+      else
+        echo "  2. $cfg (file missing)"
+      fi
+      if [ -f .vibe-kit-version ]; then
+        local r; r=$(jq -r '.memory_format // "(unset)"' .vibe-kit-version 2>/dev/null)
+        echo "  3. .vibe-kit-version memory_format=$r"
+      fi
+      echo "  4. built-in default: vibe-kit-markdown"
+      ;;
+    *)
+      _die "Usage: vibe-retrofit memory-format {set <format>|status}"
+      ;;
+  esac
+}
+
+# Interactive setup wizard for jp-jsonl
+_memory_format_setup_jp_jsonl() {
+  local cfg="$HOME/.vibe-kit/config.json"
+  mkdir -p "$HOME/.vibe-kit"
+  [ -f "$cfg" ] || echo "{}" > "$cfg"
+
+  echo ""
+  _info "Configuring jp-jsonl memory format."
+  echo "/vibe-wrap will write handoffs in two forms:"
+  echo "  - Markdown prose to <memory_dir>/sessions/<peer>/<session-id>-<date>.md"
+  echo "  - JSONL deltas appended to <memory_dir>/{decisions,commitments,follow-ups}.jsonl"
+  echo ""
+
+  # 1. memory_dir
+  local default_md="$HOME/workspace/memory"
+  local md_prompt="$default_md"
+  [ -d "$default_md" ] || md_prompt="(no default — type the path)"
+  printf "memory_dir [%s]: " "$md_prompt" >&2
+  local memory_dir
+  read -r memory_dir
+  [ -z "$memory_dir" ] && memory_dir="$default_md"
+  # Expand ~
+  memory_dir="${memory_dir/#\~/$HOME}"
+  if [ ! -d "$memory_dir" ]; then
+    _warn "memory_dir does not exist: $memory_dir"
+    printf "Create it? [y/N]: " >&2
+    local create
+    read -r create
+    case "$create" in
+      y|Y|yes|Yes) mkdir -p "$memory_dir" || _die "Failed to create $memory_dir" ;;
+      *) _die "memory_dir must exist. Re-run when ready." ;;
+    esac
+  fi
+
+  # 2. operator_name
+  local default_op
+  default_op="$(git config --global user.name 2>/dev/null || echo '')"
+  printf "operator_name [%s]: " "${default_op:-(required)}" >&2
+  local operator_name
+  read -r operator_name
+  [ -z "$operator_name" ] && operator_name="$default_op"
+  [ -z "$operator_name" ] && _die "operator_name required. Set git config user.name first or pass it interactively."
+
+  # 3. confidential_paths (default list, user can extend)
+  local default_paths='["credentials/", "vault/", ".env*", "*.key", "*.pem", ".confidential/"]'
+  printf "confidential_paths (comma-separated, blank for defaults): " >&2
+  local cp_input
+  read -r cp_input
+  local confidential_paths
+  if [ -z "$cp_input" ]; then
+    confidential_paths="$default_paths"
+  else
+    confidential_paths=$(echo "$cp_input" | jq -Rc 'split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; ""))')
+  fi
+
+  # Write config
+  local tmp; tmp="$(mktemp)"
+  jq --arg md "$memory_dir" \
+     --arg op "$operator_name" \
+     --argjson cp "$confidential_paths" \
+     '. + {memory_format: "jp-jsonl", memory_dir: $md, operator_name: $op, confidential_paths: $cp}' \
+     "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+
+  echo ""
+  _ok "memory_format = jp-jsonl"
+  _info "Config written to $cfg:"
+  jq '{memory_format, memory_dir, operator_name, confidential_paths}' "$cfg"
+  echo ""
+  _info "Active in next /vibe-wrap invocation."
+  _info "Revert with: vibe-retrofit memory-format set vibe-kit-markdown"
+}
+
+# ────────────────────────────────────────────────────────────────────────────
 # cmd: bug-report (v0.8.0)
 # Closes the feedback loop on vibe-kit bugs. /vibe-bug skill writes a JSON
 # envelope describing the bug; this primitive files it as a GitHub issue
@@ -2263,6 +2430,12 @@ SUBCOMMANDS
   bug-report-mode       Toggle auto-filing bug reports. DEFAULT: off.
     on|off|status       on = /vibe-bug auto-files via gh CLI (or URL fallback).
                         off = local-only; user uploads manually via --upstream.
+  memory-format         v0.7.1: configure /vibe-wrap handoff format.
+    set jp-jsonl        Interactive wizard: opt into JP's workspace-wide
+                        markdown + JSONL delta format. Writes to
+                        ~/.vibe-kit/config.json.
+    set vibe-kit-markdown   Revert to default (per-project handoffs).
+    status              Show resolved format + precedence chain.
 
   Skill-driven primitives (v0.3.0, called by the /vibe-retrofit SKILL):
 
@@ -2334,6 +2507,7 @@ main() {
     per-turn-sync)          cmd_per_turn_sync "$@" ;;
     bug-report)             cmd_bug_report "$@" ;;
     bug-report-mode)        cmd_bug_report_mode "$@" ;;
+    memory-format)          cmd_memory_format "$@" ;;
     probe-ai-keys)          cmd_probe_ai_keys "$@" ;;
     cluster-todos)          cmd_cluster_todos "$@" ;;
     taskmaster-configure)   cmd_taskmaster_configure "$@" ;;
