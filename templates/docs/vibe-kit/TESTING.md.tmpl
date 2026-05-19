@@ -1,34 +1,68 @@
+<!-- VIBE-KIT:PROMPT-BLOCK-START
+The /vibe-retrofit skill reads this block to know what questions to ask the user
+when drafting this file. Block stripped before final write.
+
+Questions to ask (with discovery-context priming):
+
+1. TEST COMMAND — "What's the actual test command? Discovery guessed `{{test_command}}`
+   — confirm or correct."
+   Prime with: .commands.test from discovery.
+
+2. TEST LAYOUT — "Where do tests live and what's the naming convention? (`*.test.ts`
+   next to source? `tests/` mirroring `src/`? `_spec.rb`?)"
+   Prime with: a quick `find` of common test file patterns the script ran.
+
+3. MOCK BOUNDARY — "What's mocked in tests vs. hit for real? (Network calls? DB?
+   Filesystem? Third-party APIs against test accounts?)"
+
+4. DOMINANT PATTERN — "Describe the most-used test pattern in this repo in 3-5
+   lines so future-you doesn't have to re-derive it. (E.g., 'set up fixtures in
+   beforeAll, hit real PGLite, snapshot the response, teardown via TRUNCATE.')"
+
+5. HARD-TO-TEST AREAS — "Be honest: which components are awkward to test?
+   (UI state machines, background jobs, async event loops, third-party-API-
+   dependent paths.) These are usually where bugs ship — name them so future-you
+   gives them extra scrutiny."
+
+6. COVERAGE PHILOSOPHY — "Are you targeting 100% line coverage? Just critical
+   paths? Are integration tests valued more than unit tests? State the taste so
+   future-you doesn't drift."
+
+Output: fill the {{SLOT_*}} placeholders.
+VIBE-KIT:PROMPT-BLOCK-END -->
+
 # Testing — {{project_name}}
 
-TODO scaffold. Fill in by reading 2-3 existing test files. The point is conventions, not theory.
+Curated by `/vibe-retrofit` on {{retrofitted_at}}.
 
 ## Test command
 
 ```
-{{test_command}}
+{{SLOT_TEST_COMMAND}}
 ```
-
-## Detected test files
-
-{{test_file_count_block}}
 
 ## Test layout
 
-Where do tests live? What's the naming convention? (`*.test.ts`? `_spec.rb`? `tests/` mirroring `src/`?)
+{{SLOT_TEST_LAYOUT}}
 
-## What we mock vs. what we hit for real
+## Mock boundary
 
-- Mocked: (network calls? DB? filesystem?)
-- Real: (in-memory DB? local test fixtures? hits actual APIs against test accounts?)
+{{SLOT_MOCK_BOUNDARY}}
 
-## Patterns we use
+## Dominant test pattern
 
-Pick the most-used test pattern in this repo and describe it in 3-5 lines so future-you doesn't have to re-derive it.
+{{SLOT_DOMINANT_PATTERN}}
 
-## What's hard to test
+## Hard-to-test areas (give extra scrutiny)
 
-Be honest. Components that are awkward to test (UI state machines, background jobs, async event loops) tend to be where bugs ship. Name them so the verification gate forces extra scrutiny.
+{{SLOT_HARD_TO_TEST}}
 
 ## Coverage philosophy
 
-Are you targeting 100% line coverage? Just unit tests? Are integration tests valued more than unit tests? State your taste so future-you doesn't drift.
+{{SLOT_COVERAGE_PHILOSOPHY}}
+
+## Updating this file
+
+When the testing surface changes (new test framework, new mock strategy, new
+hard-to-test area), update the relevant section. Refresh from scratch by
+re-running `/vibe-retrofit`.

@@ -916,6 +916,313 @@ Then retry."
 }
 
 # ────────────────────────────────────────────────────────────────────────────
+# cmd: probe-ai-keys (v0.3.0)
+# Detects which AI provider API keys are available. Read-only — never echoes
+# the key value itself, only the variable name + where it came from.
+# ────────────────────────────────────────────────────────────────────────────
+cmd_probe_ai_keys() {
+  local as_json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) as_json=1 ;;
+      *) _die "Unknown flag for probe-ai-keys: $1" ;;
+    esac
+    shift
+  done
+
+  # Providers in Taskmaster-cheapness order (cheaper = higher priority).
+  # Format: <name>:<env_var_name>. Used by the skill to pick a default.
+  local PROVIDERS="openai:OPENAI_API_KEY anthropic:ANTHROPIC_API_KEY google:GOOGLE_API_KEY perplexity:PERPLEXITY_API_KEY mistral:MISTRAL_API_KEY groq:GROQ_API_KEY xai:XAI_API_KEY cohere:COHERE_API_KEY"
+
+  # Shell rc files to grep for `export VAR=...`. Only the canonical ones —
+  # bash + zsh on macOS/Linux. Skip fish, csh, etc. (low signal).
+  local RC_FILES="$HOME/.zshrc $HOME/.bashrc $HOME/.bash_profile $HOME/.profile $HOME/.zprofile $HOME/.zshenv"
+
+  local providers_json="[]"
+  local recommended=""
+  local pair name var source available rc
+  for pair in $PROVIDERS; do
+    name="${pair%%:*}"
+    var="${pair##*:}"
+    source="null"
+    available="false"
+
+    # Tier 1: env var directly set.
+    # Bash 3.2 compat: indirect expansion via eval (no associative arrays).
+    local val
+    val="$(eval echo "\${$var:-}")"
+    if [ -n "$val" ]; then
+      source='"env"'
+      available="true"
+    else
+      # Tier 2: shell rc file declares it.
+      for rc in $RC_FILES; do
+        if [ -f "$rc" ] && [ -r "$rc" ]; then
+          if grep -qE "^[[:space:]]*export[[:space:]]+${var}=" "$rc" 2>/dev/null \
+             || grep -qE "^[[:space:]]*${var}=" "$rc" 2>/dev/null; then
+            source="\"file:${rc/#$HOME/~}\""
+            available="true"
+            break
+          fi
+        fi
+      done
+    fi
+
+    if [ "$available" = "true" ] && [ -z "$recommended" ]; then
+      recommended="$name"
+    fi
+
+    providers_json="$(jq -c \
+      --arg name "$name" \
+      --arg var "$var" \
+      --argjson source "$source" \
+      --argjson available "$available" \
+      '. + [{name: $name, key_var: $var, source: $source, available: $available}]' <<< "$providers_json")"
+  done
+
+  if [ "$as_json" -eq 1 ]; then
+    jq -n \
+      --argjson providers "$providers_json" \
+      --arg recommended "$recommended" \
+      '{providers: $providers, recommended_for_taskmaster: (if $recommended == "" then null else $recommended end)}'
+  else
+    echo "AI provider keys (probed at env + ${RC_FILES// /, }):"
+    echo "$providers_json" | jq -r '.[] | (if .available then "  ✓ " + .name + " (" + .key_var + " in " + (.source | tostring | gsub("\""; "")) + ")" else "  ✗ " + .name + " (" + .key_var + " not set)" end)'
+    echo ""
+    if [ -n "$recommended" ]; then
+      echo "Recommended for Taskmaster: $recommended"
+    else
+      echo "No keys detected. Set one (e.g. \`export OPENAI_API_KEY=...\` in your shell rc) before Tier 3."
+    fi
+  fi
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# cmd: cluster-todos (v0.3.0)
+# Pure data transform over .vibe-kit-discovery.json. Groups raw TODOs into
+# clusters the /vibe-retrofit skill walks the user through (keep / drop /
+# dedupe per cluster). Replaces the v0.2 "100+ raw TODOs straight to parse-prd
+# producing 100+ noisy tasks" anti-pattern.
+# ────────────────────────────────────────────────────────────────────────────
+cmd_cluster_todos() {
+  local as_json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) as_json=1 ;;
+      *) _die "Unknown flag for cluster-todos: $1" ;;
+    esac
+    shift
+  done
+
+  local json_path; json_path="$(_report_json_path)"
+  [ -f "$json_path" ] || _die "No discovery report at $json_path. Run 'vibe-retrofit discover' first."
+
+  local todos_json
+  todos_json="$(jq -c '.todos // []' "$json_path")"
+  local todo_count
+  todo_count="$(echo "$todos_json" | jq 'length')"
+  if [ "$todo_count" = "0" ]; then
+    if [ "$as_json" -eq 1 ]; then
+      echo '{"clusters": [], "total_todos": 0}'
+    else
+      echo "No TODOs to cluster."
+    fi
+    return 0
+  fi
+
+  # Cluster by first 2 path segments (or 1 if path has no slash). Within
+  # each cluster, also count keyword breakdown (todo/fixme/xxx/hack).
+  # Cap to 20 clusters; merge smallest into "other".
+  local clusters_json
+  clusters_json="$(echo "$todos_json" | jq -c '
+    map(
+      capture("^(?<path>[^:]+):(?<line>[0-9]+):(?<text>.*)$") as $parsed |
+      $parsed
+      | .cluster_key = (
+          .path | split("/") |
+          if length >= 2 then .[0:2] | join("/") else .[0] end
+        )
+      | .keyword = (
+          .text | ascii_upcase |
+          if test("FIXME") then "fixme"
+          elif test("HACK") then "hack"
+          elif test("XXX") then "xxx"
+          elif test("TODO") then "todo"
+          else "other" end
+        )
+    )
+    | group_by(.cluster_key)
+    | map({
+        name: .[0].cluster_key,
+        count: length,
+        keyword_breakdown: (
+          map(.keyword) | group_by(.) | map({(.[0]): length}) | add
+        ),
+        sample_todos: ([.[0:5][] | {file: .path, line: (.line|tonumber), text: .text}]),
+        total_files: (map(.path) | unique | length),
+        file_list: (map(.path) | unique)
+      })
+    | sort_by(-.count)
+  ')"
+
+  local cluster_count
+  cluster_count="$(echo "$clusters_json" | jq 'length')"
+  if [ "$cluster_count" -gt 20 ]; then
+    clusters_json="$(echo "$clusters_json" | jq '
+      .[:19] + [{
+        name: "other",
+        count: (.[19:] | map(.count) | add),
+        keyword_breakdown: (.[19:] | map(.keyword_breakdown // {}) | add),
+        sample_todos: (.[19:] | map(.sample_todos[0:1]) | flatten | .[0:5]),
+        total_files: (.[19:] | map(.file_list) | flatten | unique | length),
+        file_list: (.[19:] | map(.file_list) | flatten | unique)
+      }]
+    ')"
+  fi
+
+  if [ "$as_json" -eq 1 ]; then
+    jq -n \
+      --argjson clusters "$clusters_json" \
+      --argjson total "$todo_count" \
+      '{clusters: $clusters, total_todos: $total}'
+  else
+    echo "Clusters of $todo_count TODOs:"
+    echo ""
+    echo "$clusters_json" | jq -r '.[] |
+      "  • \(.name) — \(.count) TODOs across \(.total_files) files\n      keywords: \(.keyword_breakdown | to_entries | map(.key + ":" + (.value|tostring)) | join(", "))\n      sample: \(.sample_todos[0:2] | map(.file + ":" + (.line|tostring)) | join(", "))\n"'
+  fi
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# cmd: taskmaster-configure (v0.3.0)
+# Sets Taskmaster main/research/fallback models for the chosen provider.
+# Fixes the v0.2 "Taskmaster defaults to Anthropic" pain. Idempotent.
+# ────────────────────────────────────────────────────────────────────────────
+cmd_taskmaster_configure() {
+  local provider="" main="" research="" fallback="" dry_run=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --provider) shift; provider="$1" ;;
+      --main)     shift; main="$1" ;;
+      --research) shift; research="$1" ;;
+      --fallback) shift; fallback="$1" ;;
+      --dry-run)  dry_run=1 ;;
+      *) _die "Unknown flag for taskmaster-configure: $1" ;;
+    esac
+    shift
+  done
+
+  [ -z "$provider" ] && _die "--provider is required (e.g. openai, anthropic, google, perplexity, mistral)"
+  _check_command task-master
+
+  # Per-provider sane defaults — cheap models for bulk PRD parsing.
+  case "$provider" in
+    openai)
+      [ -z "$main" ]     && main="gpt-4o-mini"
+      [ -z "$research" ] && research="gpt-4o-mini"
+      [ -z "$fallback" ] && fallback="gpt-4o-mini"
+      ;;
+    anthropic)
+      [ -z "$main" ]     && main="claude-haiku-4-5-20251001"
+      [ -z "$research" ] && research="claude-haiku-4-5-20251001"
+      [ -z "$fallback" ] && fallback="claude-haiku-4-5-20251001"
+      ;;
+    google)
+      [ -z "$main" ]     && main="gemini-1.5-flash"
+      [ -z "$research" ] && research="gemini-1.5-flash"
+      [ -z "$fallback" ] && fallback="gemini-1.5-flash"
+      ;;
+    perplexity)
+      [ -z "$main" ]     && main="sonar-medium-online"
+      [ -z "$research" ] && research="sonar-medium-online"
+      [ -z "$fallback" ] && fallback="sonar-medium-online"
+      ;;
+    mistral|groq|xai|cohere)
+      [ -z "$main" ] && _die "No baked-in default model for provider '$provider'. Pass --main <model> explicitly."
+      [ -z "$research" ] && research="$main"
+      [ -z "$fallback" ] && fallback="$main"
+      ;;
+    *)
+      _die "Unknown provider '$provider'. Supported: openai, anthropic, google, perplexity, mistral, groq, xai, cohere."
+      ;;
+  esac
+
+  if [ "$dry_run" -eq 1 ]; then
+    _info "DRY RUN: would run:"
+    _info "  task-master models --setMain $main"
+    _info "  task-master models --setResearch $research"
+    _info "  task-master models --setFallback $fallback"
+    return 0
+  fi
+
+  _info "Configuring Taskmaster for $provider (main=$main, research=$research, fallback=$fallback)…"
+  # Some task-master versions use --setMain (camelCase), others --set-main.
+  # Try camelCase first; if it fails, fall back. Stderr captured so we can
+  # detect the "Unknown option" failure mode without it leaking to the user.
+  local tm_err
+  tm_err="$(task-master models --setMain "$main" 2>&1)" || {
+    if echo "$tm_err" | grep -qE 'unknown option|unrecognized'; then
+      _info "  (CLI uses kebab-case; falling back to --set-main)"
+      task-master models --set-main "$main" >&2 || _die "task-master models --set-main failed"
+      task-master models --set-research "$research" >&2 || _die "task-master models --set-research failed"
+      task-master models --set-fallback "$fallback" >&2 || _die "task-master models --set-fallback failed"
+    else
+      _die "task-master models --setMain failed: $tm_err"
+    fi
+  }
+  # camelCase path: complete the other two roles.
+  if [ -z "${tm_err##*setMain*}" ] || ! echo "$tm_err" | grep -qE 'unknown option|unrecognized'; then
+    task-master models --setResearch "$research" >/dev/null 2>&1 || task-master models --set-research "$research" >&2 || true
+    task-master models --setFallback "$fallback" >/dev/null 2>&1 || task-master models --set-fallback "$fallback" >&2 || true
+  fi
+  _ok "Taskmaster configured for $provider."
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# cmd: taskmaster-parse-prd (v0.3.0)
+# Wraps `task-master init` (idempotent) + `task-master parse-prd --input=<file>`.
+# The skill writes a CURATED PRD (from cluster-todos walkthrough) and hands
+# the path here, rather than dumping raw TODOs.
+# ────────────────────────────────────────────────────────────────────────────
+cmd_taskmaster_parse_prd() {
+  local prd="" num_tasks="" force=0 dry_run=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --prd)       shift; prd="$1" ;;
+      --num-tasks) shift; num_tasks="$1" ;;
+      --force)     force=1 ;;
+      --dry-run)   dry_run=1 ;;
+      *) _die "Unknown flag for taskmaster-parse-prd: $1" ;;
+    esac
+    shift
+  done
+
+  [ -z "$prd" ] && _die "--prd <file> is required (path to the curated PRD)"
+  [ -f "$prd" ] || _die "PRD file not found: $prd"
+  _check_command task-master
+
+  if [ "$dry_run" -eq 1 ]; then
+    _info "DRY RUN: would init Taskmaster if needed and parse-prd $prd"
+    _info "PRD preview (first 20 lines):"
+    head -20 "$prd"
+    return 0
+  fi
+
+  if [ ! -d .taskmaster ]; then
+    _info "Initializing Taskmaster…"
+    task-master init -y >&2 || _die "task-master init failed"
+  fi
+
+  local args=(parse-prd "--input=$prd")
+  [ -n "$num_tasks" ] && args+=("--num-tasks=$num_tasks")
+  [ "$force" -eq 1 ] && args+=(--force)
+
+  _info "Running: task-master ${args[*]}"
+  task-master "${args[@]}" >&2 || _die "task-master parse-prd failed"
+  _ok "Taskmaster imported tasks from $(basename "$prd"). Run \`task-master list\` to inspect."
+}
+
+# ────────────────────────────────────────────────────────────────────────────
 # cmd: rollback
 # Combines git revert + cleanup of out-of-commit state (.taskmaster/, docs/vibe-kit/)
 # ────────────────────────────────────────────────────────────────────────────
@@ -1469,6 +1776,24 @@ SUBCOMMANDS
                         out of the repo to ~/.vibe-kit/projects/<key>/reference/ so
                         the SessionStart hook works regardless of which branch is
                         checked out. Idempotent. --dry-run supported.
+
+  Skill-driven primitives (v0.3.0, called by the /vibe-retrofit SKILL):
+
+  probe-ai-keys [--json]      Detect which AI provider API keys are available
+                              (env vars + shell rc files). Recommends a provider
+                              for Taskmaster.
+  cluster-todos [--json]      Group raw TODOs from discovery into clusters by
+                              directory + keyword. The skill walks the user
+                              through clusters (keep/drop/dedupe) before writing
+                              a curated PRD.
+  taskmaster-configure        Set Taskmaster main/research/fallback for a chosen
+    --provider <name>         provider with sane cheap-model defaults. Fixes the
+    [--main M] [--research M] "Taskmaster defaults to Anthropic" footgun.
+    [--fallback M]
+  taskmaster-parse-prd        Init Taskmaster (idempotent) and import tasks from
+    --prd <file>              the CURATED PRD the skill wrote. Replaces the v0.2
+    [--num-tasks N] [--force] "dump 108 raw TODOs at parse-prd" anti-pattern.
+
   tier 1|2|3 [...]      Orchestrator: runs all subcommands in order for the tier.
 
   version               Show version + env info.
@@ -1515,9 +1840,13 @@ main() {
     merge-claude-md)  cmd_merge_claude_md "$@" ;;
     write-version)    cmd_write_version "$@" ;;
     init-taskmaster)  cmd_init_taskmaster "$@" ;;
-    rollback)         cmd_rollback "$@" ;;
-    doctor)           cmd_doctor "$@" ;;
-    migrate-to-global) cmd_migrate_to_global "$@" ;;
+    rollback)               cmd_rollback "$@" ;;
+    doctor)                 cmd_doctor "$@" ;;
+    migrate-to-global)      cmd_migrate_to_global "$@" ;;
+    probe-ai-keys)          cmd_probe_ai_keys "$@" ;;
+    cluster-todos)          cmd_cluster_todos "$@" ;;
+    taskmaster-configure)   cmd_taskmaster_configure "$@" ;;
+    taskmaster-parse-prd)   cmd_taskmaster_parse_prd "$@" ;;
     tier)
       [ $# -lt 1 ] && _die "tier requires a number: 1, 2, or 3"
       cmd_tier "$@"

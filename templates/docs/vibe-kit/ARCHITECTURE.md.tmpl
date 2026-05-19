@@ -1,33 +1,69 @@
+<!-- VIBE-KIT:PROMPT-BLOCK-START
+The /vibe-retrofit skill reads this block to know what questions to ask the user
+when drafting this file. The block is stripped before the final file is written.
+
+Questions to ask (one at a time, with discovery-context priming):
+
+1. SHAPE — "In one sentence, what shape is this system? (Single-page app + REST API,
+   monolith with worker queue, CLI + library, statically-generated site + serverless
+   functions, etc.) I'll draft a tiny ASCII diagram from your answer."
+   Prime with: discovery's .libraries list (Next.js → SPA+API, Bun → CLI/server,
+   Prisma → has DB, Redis → has queue/cache, etc.).
+
+2. DATA FLOW — "Pick ONE important user action (e.g., 'user signs up', 'agent runs a
+   tool call', 'cron job fires nightly digest'). Trace it end-to-end in 4-7 steps —
+   what gets called, what transforms it, where it lands, what can fail."
+
+3. STATE — "What's stateful in this system and where does the state live? (DB
+   tables, Redis, files on disk, browser localStorage, external APIs you don't own.)
+   Include anything that, if wiped, would lose user-visible work."
+   Prime with: any DB/migration files discovery found.
+
+4. EXTERNAL DEPENDENCIES — "Which external services does this system call out to,
+   and which are load-bearing vs. nice-to-have? (Stripe, OpenAI, S3, etc.)"
+   Prime with: discovery's .libraries list — common SaaS SDKs are a tell.
+
+5. SCALING CHARACTERISTICS — "What breaks first under 10x current load? Under 100x?
+   If you don't know yet, say so honestly — don't pretend to know."
+
+6. REVERSIBILITY / ONE-WAY DOORS — "Which decisions in this system are one-way
+   doors? (Schema migrations once data lands, public API surface once clients
+   integrate, third-party choices that lock you in.) Future-you will thank you
+   for flagging these."
+
+Output: fill the {{SLOT_*}} placeholders below.
+VIBE-KIT:PROMPT-BLOCK-END -->
+
 # Architecture — {{project_name}}
 
-TODO scaffold. Fill in by skimming the code yourself.
+Curated by `/vibe-retrofit` on {{retrofitted_at}}.
 
-{{existing_docs_pointer_block}}
+## Shape
 
-## High-level diagram
+{{SLOT_SHAPE}}
 
-Draw an ASCII diagram showing components and their relationships. If this is a web app, show client → API → DB → external services. If this is a library, show consumer → public API → internal modules → deps. If this is a CLI, show argv → parser → subcommand handlers → effects.
+## Data flow (representative)
 
-```
-(replace with your diagram)
-```
-
-## Data flow
-
-Pick one important user action (e.g., "user submits a form" / "user runs the X command") and trace it end-to-end. Where does input come from? What transforms it? Where does it land? What can go wrong at each step?
+{{SLOT_DATA_FLOW}}
 
 ## State
 
-What is stateful in this system? Where? (Database tables, Redis caches, files on disk, in-memory caches, browser localStorage, external system state.)
+{{SLOT_STATE}}
 
-## Coupling
+## External dependencies
 
-Which modules are most coupled to each other? Is the coupling justified? Where would a refactor be highest leverage?
+{{SLOT_EXTERNAL_DEPS}}
 
 ## Scaling characteristics
 
-What breaks first under 10x current load? Under 100x? (If you don't know yet, say so — don't pretend.)
+{{SLOT_SCALING}}
 
-## Reversibility
+## One-way doors
 
-If you had to undo this system, which decisions are one-way doors? (Schema migrations, third-party integrations, public API surface, customer data.)
+{{SLOT_ONE_WAY_DOORS}}
+
+## How to update this file
+
+When any answer above stops being true (new external service, schema change,
+performance ceiling moved, etc.), re-run `/vibe-retrofit` or edit the relevant
+section by hand. Future-you and future-Claude both load this on session start.

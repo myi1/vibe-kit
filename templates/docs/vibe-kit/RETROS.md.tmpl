@@ -1,28 +1,51 @@
+<!-- VIBE-KIT:PROMPT-BLOCK-START
+This file is the format spec + log for weekly retros. No Q&A needed at retrofit
+time — the file ships as an empty log with the format clearly laid out. The
+/retro skill (gstack) appends new entries here over time.
+
+If the user has prior retro notes in another location, ask them ONCE during
+retrofit: "Are there existing retro notes I should link to here?" If yes, drop
+a one-line "## Prior retros" pointer at the bottom of the file via SLOT_PRIOR_LINK.
+
+Output: write the file as-is below. SLOT_PRIOR_LINK is empty by default; populate
+only if the user gave a prior-retros pointer.
+VIBE-KIT:PROMPT-BLOCK-END -->
+
 # Retros — {{project_name}}
 
 One entry per `/retro` cycle. Reverse chronological (newest at top).
 
-Per-entry format:
+## Per-entry format
 
-```
+```markdown
 ## YYYY-MM-DD — week N retro
 
 ### What shipped
-- ...
+- (concrete user-visible outcomes, not commits)
 
 ### What surprised me
-- ...
+- (anything that took longer / shorter / went sideways vs. expected)
 
 ### Mistakes I made twice
-- ... (promote to KNOWN_GOTCHAS.md if recurring)
+- (promote to KNOWN_GOTCHAS.md if recurring 3+ times)
 
 ### Workflow changes for next week
-- ...
+- (concrete process tweaks)
 
 ### Stats (optional)
-- Bugs caught by gate: N
-- Correction loops: N
+- Bugs caught by verification gate: N
+- Correction loops avoided: N
 - /context-save runs: N
 ```
 
-(no entries yet)
+## How retros land here
+
+Run `/retro` at the end of a focused work block (end of day, end of sprint).
+The skill drafts the entry from your commit history + your input, you approve,
+it appends to this file.
+
+{{SLOT_PRIOR_LINK}}
+
+## Entries
+
+_(no entries yet — run `/retro` to add the first one.)_

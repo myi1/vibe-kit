@@ -1,200 +1,276 @@
 ---
 name: vibe-retrofit
-description: Rescue an existing AI-coded repo. Discovers scattered context (CLAUDE.md customizations, plan docs, TODO scatter, third-party libs), classifies it, and retrofits the repo with a session ritual + Taskmaster + standardized planning docs. Use when the user says "rescue this repo", "vibe-retrofit", "set up vibe-kit here", or runs `/vibe-retrofit`.
+description: Rescue an existing AI-coded repo. Discovers scattered context (CLAUDE.md customizations, plan docs, TODO scatter, third-party libs), then interactively drafts real scaffolds with Q&A (not empty stubs) and curates TODOs into a focused PRD before importing into Taskmaster. Use when the user says "rescue this repo", "vibe-retrofit", "set up vibe-kit here", or runs `/vibe-retrofit`.
 ---
 
-# /vibe-retrofit — orchestrator for vibe-kit retrofit
+# /vibe-retrofit — orchestrator for vibe-kit retrofit (v0.3+)
 
-This skill is the conversational orchestrator that pairs with `bin/vibe-retrofit`. The script handles deterministic operations (file IO, hashing, git, taskmaster CLI calls). This skill handles the parts where a model adds real value over regex: classifying existing CLAUDE.md content, proposing triage classifications for discovered plan docs, authoring the synthetic PRD that Taskmaster's `parse-prd` will consume.
+This skill is the conversational orchestrator that pairs with `bin/vibe-retrofit`. The CLI handles deterministic operations (file IO, hashing, git, taskmaster CLI calls, JSON data transforms). This skill handles every part where a model adds real value over regex: drafting the docs/vibe-kit scaffolds from Q&A (not empty stubs), curating raw TODOs into a focused PRD (not a 100-noisy-tasks dump), picking the right AI provider for Taskmaster (not blindly defaulting to Anthropic).
 
-Handoff between skill and script is **file-based**:
-- Script writes `.vibe-kit-discovery.json` (machine) + `.vibe-kit-discovery.md` (human)
-- Skill writes `.vibe-kit-classification.json` (machine, optional — script falls back to bare templates if absent)
+**The split is the architecture.** Bash does mechanical work. Skill does intelligent work. If you find yourself reaching for a bash helper that takes free-form user input, that's a skill phase, not a bash subcommand.
+
+**Handoff is file-based:**
+- CLI writes `.vibe-kit-discovery.json` (machine-readable)
+- CLI primitives accept `--json` so the skill can parse + drive the conversation
+- Skill writes draft files directly via the Write tool (no template-copy)
+- Skill writes `.vibe-kit/curated-prd.md` (Tier 3) for `taskmaster-parse-prd` to consume
+
+---
 
 ## Phase 1 — Pre-flight
 
-Run via the Bash tool:
-
 ```bash
-# 1. Confirm we're in a git repo
-if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "ERROR: not inside a git repo"; exit 1
-fi
-echo "REPO: $(basename "$(git rev-parse --show-toplevel)")"
+# Confirm git repo + clean working tree on the targets we'll touch
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "ERROR: not in a git repo"; exit 1; }
+echo "REPO:   $(basename "$(git rev-parse --show-toplevel)")"
 echo "BRANCH: $(git branch --show-current)"
-git status --porcelain | head -5
+git status --short | head -10
 echo "---"
-# 2. Check vibe-retrofit is installed
-which vibe-retrofit || echo "ERROR: vibe-retrofit not on PATH. Run ~/dev/vibe-kit/bin/install.sh"
-vibe-retrofit version 2>/dev/null | head -2
-echo "---"
-# 3. Check API key availability for Tier 3
-[ -n "${OPENAI_API_KEY:-}" ] && echo "OPENAI_API_KEY: set"
-[ -n "${ANTHROPIC_API_KEY:-}" ] && echo "ANTHROPIC_API_KEY: set"
-[ -n "${PERPLEXITY_API_KEY:-}" ] && echo "PERPLEXITY_API_KEY: set"
-[ -z "${OPENAI_API_KEY:-}${ANTHROPIC_API_KEY:-}${PERPLEXITY_API_KEY:-}" ] && echo "NO API KEY: Tier 3 will fail"
+# Confirm vibe-retrofit on PATH + version
+command -v vibe-retrofit >/dev/null 2>&1 || { echo "ERROR: vibe-retrofit not on PATH — run ~/dev/vibe-kit/bin/install.sh"; exit 1; }
+vibe-retrofit version | head -2
 ```
 
 **Stop conditions:**
-- Not in a git repo → tell user, stop
-- Working tree has uncommitted changes to `CLAUDE.md` or `docs/vibe-kit/` → tell user to commit/stash first, stop
-- `vibe-retrofit` not on PATH → tell user to run `~/dev/vibe-kit/bin/install.sh`, stop
+- Not in a git repo → tell user, stop.
+- Uncommitted changes to `CLAUDE.md`, `docs/vibe-kit/`, `.vibe-kit-version`, `.taskmaster/` → tell user to commit/stash first.
+- `vibe-retrofit` not on PATH → tell user to run the install script.
+- vibe-retrofit version < 0.3 → tell user to `cd ~/dev/vibe-kit && git pull && bash bin/install.sh` first.
 
-If pre-flight passes: tell the user what was detected in one sentence and continue.
+If pre-flight passes, continue silently — don't bloat output with a green-check report.
+
+---
 
 ## Phase 2 — Discovery
-
-Run `vibe-retrofit discover` to scan the repo. This is read-only — no risk.
 
 ```bash
 vibe-retrofit discover
 ```
 
-Then read the generated reports:
+Read the JSON (not the human report — you'll synthesize your own summary):
 
 ```bash
-cat .vibe-kit-discovery.json
-echo "---"
-head -50 .vibe-kit-discovery.md
+cat .vibe-kit-discovery.json | jq '{
+  agent_files: (.agent_files // [] | length),
+  plan_docs: (.plan_docs // [] | length),
+  todo_count: .todo_count,
+  libraries: (.libraries // [] | length),
+  gstack_artifacts: ((.gstack.designs + .gstack.ceo_plans + .gstack.checkpoints + .gstack.handoffs + .gstack.autoplans + .gstack.test_plans) // [] | length),
+  taskmaster_present: ((.taskmaster // false) | not | not)
+}'
 ```
 
-**Summarize the findings for the user in 4-6 lines**: how many agent files, how many plan docs, how many TODOs, how many libraries, whether Taskmaster is already initialized. Be specific (counts + a sample of the top items). End with: "Read the full report at `.vibe-kit-discovery.md` if you want detail. Otherwise, ready to pick a tier?"
+**Tell the user in 3-5 lines max:** counts of each artifact type + whether Taskmaster is already initialized + 1-2 most interesting findings (e.g. "Found 24 gstack artifacts under ~/.gstack/projects/yahyaismail — your prior work on this repo").
 
-## Phase 3 — Tier selection
+---
 
-Use AskUserQuestion to confirm tier. Default is Tier 3 for repos with felt pain.
+## Phase 3 — Discovery review (CRITICAL — this catches the script's blind spots)
 
-> "Which tier? Tier 1 = CLAUDE.md merge only (10 min). Tier 2 = + docs/vibe-kit/ scaffolds with discovered-doc pointers (45 min). Tier 3 = + Taskmaster init with TODOs imported via parse-prd (2-3 hrs human / ~$0.0005 OpenAI cost). Default Tier 3 for rescue use case."
+The discovery scan uses regex heuristics. It misses things. Ask the user **before** drafting anything:
 
-Options:
-- A) Tier 3 — full retrofit (recommended for rescue)
-- B) Tier 2 — standard
-- C) Tier 1 — minimum
-- D) Dry-run first (run `vibe-retrofit tier <chosen> --dry-run` to preview before committing)
+> "Discovery found these context-holding directories: [list from .agent_files and .plan_docs and top-level dirs]. Are there any IMPORTANT subdirs it missed? Things like `apps/<app>/docs/<system>/`, internal wikis, design libraries, ADR folders — places where load-bearing context lives but the script wouldn't have found via top-level scan."
 
-If user picks D, run `vibe-retrofit tier <N> --dry-run`, show output, then re-ask if they want to apply.
+Collect the user's answer. Cache it in memory — you'll use it in:
+- Phase 6 (scaffold authoring) — thread these dirs into the PROJECT_MAP "Important context dirs" slot
+- Phase 9 (commit) — note them as discovery follow-ups
 
-## Phase 4 — Skill's fuzzy work (Tier 2+ only)
+If the user names a dir like `apps/hub-portal/docs/hubibi/`, briefly verify it exists with `ls` and skim the top 1-2 files so your later draft references real content.
 
-For Tier 2 and Tier 3, before invoking the tier orchestrator, do the classification work the bash script can't do well:
+---
 
-### 4a. Classify existing CLAUDE.md content (if CLAUDE.md exists pre-retrofit)
+## Phase 4 — Tier selection
 
-Read the existing CLAUDE.md (if any) and bucket each section into one of:
-- `commands` — install/test/typecheck/dev commands (might overlap with vibe-kit's Commands section)
-- `routing` — skill or command routing (might overlap with vibe-kit's Skill routing section)
-- `conventions` — code style, patterns, project conventions (KEEP as-is, doesn't overlap with vibe-kit)
-- `other` — anything else (project description, contact info, links — KEEP as-is)
+Use AskUserQuestion. Default Tier 3.
 
-**Tell the user**: "Your existing CLAUDE.md has N sections. I classified them as: [breakdown]. The vibe-kit additions block will be appended at the end — your existing commands/routing sections will REMAIN above it. You may want to consolidate later, but the retrofit won't touch them."
+> "Which tier?
+> Tier 1 = CLAUDE.md merge only (5 min, no API cost)
+> Tier 2 = + interactive Q&A-driven scaffolds in docs/vibe-kit/ + gstack reference symlinks (10-15 min, no API cost)
+> Tier 3 = + curated TODO PRD → Taskmaster import (15-25 min, ~$0.01-0.05 API cost)
+> Default: Tier 3 for rescue use case."
 
-### 4b. Triage discovered plan docs (Tier 2+)
+Options: Tier 3 (Recommended) / Tier 2 / Tier 1 / Cancel.
 
-For each plan doc in `.vibe-kit-discovery.json` `.plan_docs[]`, propose a triage classification:
-- `load-bearing` — linked from PROJECT_MAP.md
-- `reference` — moved to `docs/vibe-kit/reference/`
-- `stale` — moved to `docs/archive/` with one-line death note
+---
 
-To classify, read the first 30 lines of each doc and apply judgment:
-- Recent date stamp + active TODOs + concrete file references → load-bearing
-- Pure documentation / how-tos / "here's how the system works" → reference
-- "Plan to migrate X by Q3 2024" or older + no follow-up → stale
+## Phase 5 — CLAUDE.md merge (all tiers)
 
-Present the triage proposal in a table:
-
-| Doc | Proposed | Why |
-|-----|----------|-----|
-| docs/plans/auth-flow.md | load-bearing | Active TODOs, references current files |
-| thoughts/2024-q3-refactor.md | stale | Date is 2 years old, refactor never happened |
-| docs/api-conventions.md | reference | Stable reference docs, no decay |
-
-Ask the user to confirm or override before any moves happen. **Do not move files yet** — write the classification to `.vibe-kit-classification.json` so the tier orchestrator can use it.
+Briefly read existing CLAUDE.md (if any) and tell the user how many sections it has and what they cover. Don't classify exhaustively — the vibe-kit additions block is appended at the end and doesn't touch existing content unless block-hash mismatch (in which case bash refuses and the user decides --force or move-edits-up).
 
 ```bash
-# Build the classification JSON (after user confirms)
-jq -n '{
-  plan_doc_triage: [
-    {"path": "docs/plans/auth-flow.md", "classification": "load-bearing"},
-    {"path": "thoughts/2024-q3-refactor.md", "classification": "stale"},
-    {"path": "docs/api-conventions.md", "classification": "reference"}
-  ]
-}' > .vibe-kit-classification.json
+vibe-retrofit merge-claude-md
 ```
 
-### 4c. Author synthetic PRD (Tier 3 only)
+If the script refuses because of a hash mismatch, tell the user the two options (move edits above marker / `--force`) and let them pick.
 
-`vibe-retrofit init-taskmaster` builds a default synthetic PRD from raw discovered TODOs. The skill can do better: read `.vibe-kit-discovery.json` `.todos[]` and group them by module/area before feeding to parse-prd. This improves the quality of Taskmaster's task generation.
+---
 
-If TODO count is < 30: no grouping needed, the bare PRD from the script is fine.
+## Phase 6 — Scaffold authoring (Tier 2+) — Q&A draft pass
 
-If TODO count is 30+: group by file directory, write a curated PRD to `.vibe-kit-synthetic-prd.md`, and tell the script to use it instead (the script will respect a pre-existing file at that path).
+**This is where v0.3 stops writing empty stubs and starts producing real docs.**
 
-## Phase 5 — Execute the tier
+For each template in `~/dev/vibe-kit/templates/docs/vibe-kit/*.tmpl`:
 
-Run the tier orchestrator. Pass `--dry-run` first if the user asked for it in Phase 3.
+1. Read the template file with the Read tool.
+2. Extract the prompt block — everything between `<!-- VIBE-KIT:PROMPT-BLOCK-START` and `VIBE-KIT:PROMPT-BLOCK-END -->`. The block tells you what questions to ask the user.
+3. Ask the questions **conversationally and one at a time** (or batched 2-3 per AskUserQuestion call if they're closely related). Prime each question with the relevant discovery context the prompt block calls out (e.g. for ARCHITECTURE's "shape" question, prime with the detected libraries).
+4. Draft the answers into the `{{SLOT_*}}` placeholders. Strip the prompt block. Substitute `{{project_name}}` and `{{retrofitted_at}}`.
+5. Show the rendered file to the user with: "Here's the draft for `docs/vibe-kit/<file>`. Approve as-is, edit any section, or skip the file?"
+6. Iterate until the user approves. Then Write the file to `docs/vibe-kit/<file>`.
+
+**Order to draft them in:** PROJECT_MAP.md → ARCHITECTURE.md → TESTING.md → RETROS.md. (PROJECT_MAP first because it grounds the user; ARCHITECTURE builds on it; TESTING is concrete; RETROS is just a format spec with no Q&A.)
+
+Also draft `KNOWN_GOTCHAS.md` at the repo root if it doesn't exist — but here the Q&A is short ("Any project quirks you want to flag right now? Things that have bitten you before that future-you should know?"). If user has nothing, write a minimal scaffold with the section format and a note that `/learn` will populate it over time.
+
+**Posture during Q&A:**
+- Ask 1-2 questions per turn. Don't dump 8 questions at once.
+- Quote the user's answer verbatim when drafting — don't paraphrase unless asked.
+- If the user gives a one-word answer, gently expand with a clarifying question rather than producing a one-word section.
+- If the user says "skip" on a section, leave the slot as `_(skipped — fill in later)_` and move on. No shame.
+
+---
+
+## Phase 7 — gstack reference symlinks (Tier 2+)
+
+Deterministic — just invoke the primitive:
 
 ```bash
-vibe-retrofit tier <N>
+vibe-retrofit _scaffold_gstack_reference 2>/dev/null || true
+# Actually: tier-2/tier-3 orchestrator runs this internally as part of the
+# `_scaffold_gstack_reference` helper. We don't expose it as a top-level
+# subcommand because it's pure mechanical work after the global-dir resolution.
+# Just rely on cmd_tier to call it, or run `vibe-retrofit tier 2 --dry-run`
+# to see what would land.
 ```
 
-The script handles: CLAUDE.md merge (idempotent, refuses if block hash mismatches), docs/vibe-kit/ scaffold writes, Taskmaster init + parse-prd, .vibe-kit-version write, single commit on `vibe-kit-retrofit` branch.
+Actually the v0.3 way: call `vibe-retrofit tier <N>` AT THE END (Phase 10), not here. Tier orchestrator runs the deterministic phases (`_scaffold_gstack_reference`, `write-version`). The skill has already done the intelligent phases (CLAUDE.md merge in Phase 5, scaffold drafting in Phase 6).
 
-## Phase 6 — Triage gate (after Tier 3 only)
+Skip this phase in v0.3 — fold it into Phase 10.
 
-After `task-master parse-prd` runs, **stop and triage** before the user moves on. Show:
+---
+
+## Phase 8 — TODO curation (Tier 3 only)
+
+**Replaces the v0.2 "dump 108 raw TODOs at parse-prd, get 108 noisy tasks" anti-pattern.**
 
 ```bash
-task-master list --status=pending | head -30
-echo "---"
-echo "Total pending:"
-task-master list --status=pending --format=compact 2>/dev/null | wc -l
+vibe-retrofit cluster-todos --json > /tmp/vibe-todo-clusters.json
+cat /tmp/vibe-todo-clusters.json | jq '.clusters | map({name, count, total_files, keyword_breakdown})'
 ```
-
-Tell the user: "Taskmaster imported N tasks. Triage by recognition:
-- Anything you don't recognize → `task-master remove-task --id=<id>`
-- Anything stale but worth keeping → `task-master set-status <id> deferred` and tag `stale:?`
-- Anything live → leave or `task-master set-status <id> in-progress`
-
-Take 15-30 min on this. Bad Taskmaster output now becomes a graveyard later."
-
-Then, for accepted plan-doc moves from Phase 4b, propose them:
-
-```bash
-# (Only if user approved moves in Phase 4b)
-# For each load-bearing doc: ensure it's linked from docs/vibe-kit/PROJECT_MAP.md
-# For each reference doc: mv "$src" "docs/vibe-kit/reference/$(basename "$src")"
-# For each stale doc:     mv "$src" "docs/archive/$(basename "$src")"
-```
-
-Do these moves only with explicit user approval. Default to NOT moving — the retrofit can be repeated later.
-
-## Phase 7 — Report + handoff
 
 Tell the user:
-1. **What changed**: CLAUDE.md updated, docs/vibe-kit/ scaffolded with N files, .vibe-kit-version written (tier N), Taskmaster initialized with M tasks (or "no Taskmaster" for Tier <3).
-2. **Branch**: `vibe-kit-retrofit` — review the diff, squash-merge to main when ready (or `vibe-retrofit rollback` if you want to undo).
-3. **Next steps**: Read `sop/SESSION_RITUAL.md` from your vibe-kit clone. Open `KNOWN_GOTCHAS.md` and add one entry once the verification gate catches its first bug. Run `vibe-retrofit doctor` weekly.
+> "Discovery found N TODOs across M files. I've clustered them into K groups by directory + keyword. For each cluster I'll show you the sample TODOs and you tell me: keep all / keep some / drop all / I'll specify."
 
-## Pre-flight failures — error messages
+**Per-cluster walkthrough:**
 
-If `merge-claude-md` returns "Block hash mismatch": user edited inside the marker block. Choices:
-- Move custom edits ABOVE the marker, re-run
-- Or `vibe-retrofit tier <N> --force` (overwrites the block; user accepts loss of in-block edits)
+For each cluster (largest first, capped at top 10 clusters for sanity):
+1. Show: cluster name, count, keyword breakdown, top 3-5 sample TODOs verbatim.
+2. Ask via AskUserQuestion:
+   - "Keep all (X TODOs)"
+   - "Drop all (you've outgrown / never going to do)"
+   - "Keep some — I'll specify which" (then ask follow-up about which line numbers / patterns)
+   - "Skip cluster review, I'll triage in Taskmaster later"
+3. Collect: list of `{file, line, text}` entries the user wants to keep.
 
-If `init-taskmaster` returns "No LLM API key": tell user to set OPENAI_API_KEY in shell, then re-run only `vibe-retrofit init-taskmaster` (no need to redo discover/merge).
+After all clusters reviewed (or user opts to skip remaining), write the curated PRD:
 
-If discovery finds `>500 TODOs`: warn the user — parse-prd cost scales linearly (~$0.0001/task = ~$0.05 for 500). Offer Phase 4c grouping to compress.
+```bash
+mkdir -p .vibe-kit
+cat > .vibe-kit/curated-prd.md <<EOF
+# Curated work backlog — $(basename "$(pwd)")
 
-## Posture
+Curated by /vibe-retrofit on $(date -u +%Y-%m-%dT%H:%M:%SZ) from N raw TODOs
+across M clusters. Only items the user explicitly kept are below. Each
+becomes one Taskmaster task; preserve file:line provenance.
 
-- Always interactive — never destructive. Every mutating step gates on user confirmation.
-- Commits to `vibe-kit-retrofit` branch — squash-merge after review.
-- Never modifies files outside the standard scope (CLAUDE.md, .vibe-kit-version, docs/vibe-kit/, .taskmaster/). Plan-doc moves only with explicit per-doc approval.
+## Tasks
 
-## Completion
+$(... user-kept TODOs as bullets, grouped by cluster ...)
+EOF
+```
 
-Report DONE with: tier executed, files touched, taskmaster task count, branch name, rollback hint.
+Tell the user how many TODOs survived curation. Realistic compression: 100+ raw → 15-30 curated is the target.
 
-Report DONE_WITH_CONCERNS if: parse-prd produced obviously hallucinated tasks (named entities not in the discovered TODOs), CLAUDE.md merge produced visible duplication, OR user declined a step that's load-bearing for the tier.
+---
 
-Report BLOCKED if: pre-flight failed and the user can't resolve it in this session.
+## Phase 9 — Taskmaster setup (Tier 3 only) — provider + cost confirm
+
+**Probe available AI keys:**
+
+```bash
+vibe-retrofit probe-ai-keys --json > /tmp/vibe-ai-keys.json
+cat /tmp/vibe-ai-keys.json | jq
+```
+
+Use the JSON to drive an AskUserQuestion:
+
+> "I found these AI provider keys: [list available ones with sources]. Taskmaster needs one provider for main/research/fallback model. Recommended: <X> (it's cheap for bulk PRD parsing). Cost estimate for your curated PRD: ~$<estimate>.
+>
+> Use <recommended>? Or pick a different available provider?"
+
+Options (only show options the user actually has keys for):
+- Use <recommended> (Recommended)
+- Use <other_available>
+- Skip Taskmaster setup (do it manually later)
+- Cancel retrofit
+
+**On user confirm:** if the key is in a shell rc file but NOT in the current env, `source` it explicitly before continuing. Then:
+
+```bash
+# IMPORTANT: source the rc file if the key was detected there but not in env.
+# vibe-retrofit's probe-ai-keys output names the source file.
+source ~/.zshrc 2>/dev/null  # or whichever file the probe found
+
+vibe-retrofit taskmaster-configure --provider <chosen>
+vibe-retrofit taskmaster-parse-prd --prd .vibe-kit/curated-prd.md
+```
+
+Show the user the imported task count + a sample of the first 5 tasks (`task-master list --status=pending | head -10`).
+
+---
+
+## Phase 10 — Finalize
+
+Run the deterministic tail of the retrofit:
+
+```bash
+# gstack reference symlinks (global location, branch-independent — v0.2+)
+# This is folded into `vibe-retrofit tier <N>` but the scaffold-drafting
+# phase has already produced the docs/vibe-kit/*.md files, so the tier
+# orchestrator will skip them (they exist) and only write _scaffold_gstack_reference.
+vibe-retrofit tier <N>
+
+# .vibe-kit-version is written automatically by the tier orchestrator.
+```
+
+**Final summary** to the user:
+1. **What changed:** CLAUDE.md updated (block hash <8-char>), docs/vibe-kit/ has N curated files, gstack reference symlinked to global location, .vibe-kit-version written (tier N, project_key <X>).
+2. **Taskmaster (Tier 3):** N tasks imported from curated PRD via <provider>. Run `task-master list` to inspect. Run `task-master next` to start working.
+3. **Branch:** `vibe-kit-retrofit` (or the current branch if you started on a non-main branch). Review the diff, squash-merge to main when ready. Rollback via `vibe-retrofit rollback` if anything looks off.
+4. **Verify:** Open a fresh Claude Code session in this repo. The vibe-kit SessionStart hook should fire with a briefing pulling from `~/.vibe-kit/projects/<project_key>/reference/`. If the briefing is missing, run `vibe-retrofit doctor`.
+
+---
+
+## Error handling
+
+- `merge-claude-md` returns "Block hash mismatch" → tell user: move edits above marker, or `--force` (loses in-block edits).
+- `taskmaster-parse-prd` returns API auth error → tell user the key source file probably needs to be sourced into env; show the exact `source` command.
+- `cluster-todos` shows huge "other" cluster → the path-based clustering didn't find good groupings (likely a flat-layout repo); fall back to keyword-based filtering ("keep all FIXME, drop all TODOs" type prompt).
+- Discovery missed important dirs (caught in Phase 3) but user already approved → no problem, you'll thread them into the scaffolds in Phase 6.
+
+---
+
+## Posture (v0.3 reminder)
+
+- **Interactive by default.** Every mutating step gates on user confirmation.
+- **Skill drives intelligence.** If you find yourself reaching for a bash helper to do free-form text generation or classification, the skill should do it, not bash.
+- **Drafts shown for approval.** Never write a scaffold without the user approving the content first.
+- **Curation before import.** Never `parse-prd` a raw TODO dump. Always cluster + walk + write a curated PRD first.
+- **Provider auto-detect.** Never assume Taskmaster's default provider. Always probe + confirm.
+
+---
+
+## Completion reports
+
+- **DONE** — tier N executed, all scaffolds drafted + approved, Taskmaster (if Tier 3) imported M tasks from N raw TODOs (compression ratio noted), branch + rollback hint surfaced.
+- **DONE_WITH_CONCERNS** — user skipped a scaffold OR cluster review, OR curated PRD compression was low (<3x), OR a discovered dir from Phase 3 didn't make it into PROJECT_MAP.
+- **BLOCKED** — pre-flight failed and user can't resolve in-session, OR vibe-retrofit version too old.

@@ -1,41 +1,66 @@
+<!-- VIBE-KIT:PROMPT-BLOCK-START
+The /vibe-retrofit skill reads this block to know what questions to ask the user
+when drafting this file. The block is stripped before the final file is written.
+
+Questions to ask (one at a time, conversationally, with discovery-context priming):
+
+1. ENTRY POINTS — "What are the 5-7 most important entry points into this codebase?
+   I'll start the list with what discovery found, but I need your synthesis of which
+   ones are load-bearing vs. incidental. Routes / CLI commands / exported functions /
+   cron jobs / deploy targets all count."
+   Prime with: top-level dirs from discovery, .commands.{install,dev,test,typecheck}.
+
+2. MODULE STRUCTURE — "For each top-level directory in the repo, give me ONE LINE on
+   what lives there. Skip names that explain themselves (tests/, docs/). I need the
+   non-obvious ones."
+   Prime with: actual top-level dirs from `ls`, NOT just discovery output (catches
+   subdirs the script missed — apps/hub-portal/docs/hubibi/ class of misses).
+
+3. DATA MODEL — "What are the 5 most important data entities (User, Order, Document,
+   Session, whatever) and where are they defined? File path + line if you know it."
+   Prime with: any *.prisma / models/ / schema.* files discovery found.
+
+4. NEW CODE FLOW — "When you add a typical feature, what's the file dance? Like
+   'controller → service → model → migration → test' or 'route → handler → repo →
+   reducer → component'. The mental model future-you needs to load on day 1."
+   No discovery prime — this is pure user knowledge.
+
+5. (OPTIONAL) MISSED DOC DIRS — "Did discovery miss any directories that hold
+   important context? (Design docs, ADRs, runbooks, internal wikis.) I'll add them
+   to the section below."
+   Only ask if the user hasn't already flagged misses in the discovery-review phase.
+
+Output: fill the {{SLOT_*}} placeholders below with the user's curated answers.
+Multiline answers fine — keep markdown formatting from the user's input intact.
+VIBE-KIT:PROMPT-BLOCK-END -->
+
 # Project Map — {{project_name}}
 
-This file is a TODO scaffold. Fill it in YOURSELF — do not have Claude draft it. The point is your synthesis of what's load-bearing.
-
-{{existing_docs_pointer_block}}
+Curated by `/vibe-retrofit` on {{retrofitted_at}}. The point of this file is
+your synthesis of what's load-bearing. Refresh it by re-running `/vibe-retrofit`
+when the answers change.
 
 ## Entry points
 
-What are the 5 most important entry points into this codebase? (Routes, CLI commands, exported functions, background jobs.)
-
-- [ ] (entry point 1 — file:line)
-- [ ] (entry point 2 — file:line)
-- [ ] (entry point 3 — file:line)
-- [ ] (entry point 4 — file:line)
-- [ ] (entry point 5 — file:line)
+{{SLOT_ENTRY_POINTS}}
 
 ## Module structure
 
-What lives where? Keep it to one line per top-level directory. Skip anything obvious from the name.
-
-- `src/` —
-- `lib/` —
-- ...
+{{SLOT_MODULE_STRUCTURE}}
 
 ## Data model
 
-What are the 5 most important data entities? Where are they defined?
-
-- [ ]
-- [ ]
-- [ ]
-- [ ]
-- [ ]
+{{SLOT_DATA_MODEL}}
 
 ## Where new code usually goes
 
-When you add a feature, where does it usually land? What's the typical file dance? (e.g., "controller → service → model → migration → test.")
+{{SLOT_NEW_CODE_FLOW}}
+
+## Important context dirs
+
+{{SLOT_CONTEXT_DIRS}}
 
 ## Who reads this file
 
-Future Claude. Future you. New collaborators. Update it when one of those people would have been confused.
+Future Claude (on every session start via the vibe-kit hook). Future you. New
+collaborators. Update it when one of those people would have been confused.

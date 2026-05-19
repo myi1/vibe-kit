@@ -2,6 +2,46 @@
 
 All notable changes to vibe-kit are documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-05-19 (Skill owns intelligence, CLI owns primitives — real scaffolds + curated tasks + auto-provider)
+
+**Three bugs drove this release**, all reported from a real Tier 3 retrofit on a 108-TODO repo:
+
+1. **Scaffolds were empty stubs.** `docs/vibe-kit/{PROJECT_MAP,ARCHITECTURE,TESTING,RETROS}.md` got written as TODO-yourself templates. The user had to fill them in by hand. Nothing in the retrofit actually USED the LLM to draft them. Other gstack skills (office-hours, plan-ceo-review) do interactive Q&A → draft → approve. Vibe-kit didn't.
+2. **Taskmaster defaulted to Anthropic, every retrofit had to be manually reconfigured.** The user has `OPENAI_API_KEY` (the common case), the script ran `task-master init` without provider detection, and `parse-prd` failed loud demanding an Anthropic key. User had to run `task-master models --setMain/Research/Fallback` manually three times before parse-prd would work.
+3. **108 TODOs in → 108 noisy tasks out.** `parse-prd` doesn't dedupe, doesn't cluster, doesn't prioritize. It's 1:1 TODO→task. The retrofit report literally noted "expected outcome: the 108 tasks are noisy — many are duplicates, stale, or trivially-resolved file:line references." The fix should have happened at ingest, not as a follow-up cleanup.
+
+**The common architectural fix:** vibe-kit's CLI keeps doing mechanical work (marker-bounded merges, hashing, file IO). Everything that requires asking the user a question or producing a draft moves into the `/vibe-retrofit` SKILL. Same separation gstack uses everywhere — and the reason gstack feels different from vibe-kit when you use them back to back.
+
+### Added — 4 new CLI primitives (skill-driven)
+
+- **`vibe-retrofit probe-ai-keys [--json]`** — detects which provider keys are available, in env vars AND in shell rc files (`~/.zshrc`, `~/.bashrc`, etc.). Never echoes the key value, only the var name + source. Recommends the cheapest available provider for Taskmaster.
+- **`vibe-retrofit cluster-todos [--json]`** — pure data transform over the discovery JSON's TODOs. Groups by directory + keyword (TODO/FIXME/HACK/XXX), caps at 20 clusters, sample TODOs per cluster. The skill walks the user through each cluster (keep/drop/dedupe) before any task import.
+- **`vibe-retrofit taskmaster-configure --provider <name>`** — sets Taskmaster main/research/fallback for the chosen provider with cheap-model defaults (openai → gpt-4o-mini, anthropic → claude-haiku-4-5, google → gemini-1.5-flash, etc.). Tries `--setMain` (camelCase) first, falls back to `--set-main` (kebab-case) for older task-master versions. Idempotent.
+- **`vibe-retrofit taskmaster-parse-prd --prd <file>`** — wraps `task-master init` (idempotent) + `task-master parse-prd --input=<file>`. The skill writes a CURATED PRD here, not raw TODOs.
+
+### Changed — SKILL.md rewritten as full orchestrator
+
+The `/vibe-retrofit` skill now drives the entire retrofit interactively:
+
+- **Phase 3 (NEW): Discovery review.** Skill asks the user "did discovery miss any important subdirs?" — catches the class of misses where the script's heuristics don't find e.g. `apps/<app>/docs/<system>/`. The original retrofit report flagged exactly this miss as the single highest-value follow-up; now it's caught at retrofit time.
+- **Phase 6 (NEW): Scaffold authoring with Q&A.** For each of PROJECT_MAP/ARCHITECTURE/TESTING/RETROS, the skill reads the template's `<!-- VIBE-KIT:PROMPT-BLOCK -->` section to know what questions to ask, runs the Q&A conversationally (one or two questions per turn, primed with discovery context), drafts the file, shows the user for approval, iterates until signed off, writes. No more empty stubs.
+- **Phase 8 (NEW): TODO curation.** Skill calls `cluster-todos --json`, walks the user through each cluster (largest first), collects which items to keep, writes `.vibe-kit/curated-prd.md` with only the kept items. Target compression: 100+ raw → 15-30 curated.
+- **Phase 9 (NEW): Provider auto-detect + cost confirm.** Skill calls `probe-ai-keys --json`, recommends the cheapest available provider, shows a cost estimate for the curated PRD, asks the user to confirm (per their request: "after confirming with user to connect API key since theres a cost associated with it"). Sources the rc file into env if the key was detected there but not currently exported.
+
+### Changed — templates are now skill-readable prompts, not literal content
+
+Templates under `templates/docs/vibe-kit/*.tmpl` now lead with a `<!-- VIBE-KIT:PROMPT-BLOCK-START ... VIBE-KIT:PROMPT-BLOCK-END -->` section that tells the skill what questions to ask for each `{{SLOT_*}}` placeholder. The skill strips the block before writing the final file. The user-visible output is a real curated document, not a TODO-yourself stub.
+
+### Migration
+
+- **Existing pre-v0.3 retrofitted repos:** no migration needed. Their `.vibe-kit-version` + CLAUDE.md + docs/vibe-kit/* keep working as-is. To regenerate scaffolds with the new Q&A flow, re-run `/vibe-retrofit` (the skill detects the existing state and offers a "refresh scaffolds" path).
+- **Existing users updating vibe-kit:** `cd ~/dev/vibe-kit && git pull && bash bin/install.sh` picks up the new CLI primitives + the rewritten SKILL.md.
+- **The v0.2 `migrate-to-global` subcommand stays.** Still the right tool for pre-v0.2 retrofits that have an in-repo `docs/vibe-kit/reference/`.
+
+### What this closes
+
+Three "vibe-kit doesn't feel like gstack" complaints, one architectural fix. The CLI keeps being the mechanical foundation. The skill becomes the actual product surface — the conversational orchestrator users experience. The user's exact framing was right: "it should be the llm filling out the docs, then showing me for approval. like gstack does."
+
 ## [0.2.0] — 2026-05-19 (Reference layer moves outside the repo — branch-independent context)
 
 **The bug that drove this release:** user's fresh Claude Code session on the canary repo couldn't see the vibe-kit briefing, because the canary's retrofit lived on a feature branch that hadn't merged to main. The SessionStart hook found `.vibe-kit-version` but the `docs/vibe-kit/reference/` it pointed at didn't exist on main yet. Re-initialize, lose context — the whole point of session-start was defeated by the worst possible thing: git branch state.
