@@ -916,6 +916,115 @@ Then retry."
 }
 
 # ────────────────────────────────────────────────────────────────────────────
+# cmd: upgrade (v0.4.0)
+# Updates vibe-kit in-place. Touches a last-check timestamp so the SessionStart
+# hook can throttle to once-per-24h.
+#
+# Modes:
+#   --check      Read-only. Exits 0 if up-to-date, 1 if outdated.
+#   --auto       Skip confirmation. git pull + reinstall directly.
+#   --json       Machine-readable output (combined with --check).
+#   (default)    Interactive: check + show CHANGELOG diff + confirm + apply.
+# ────────────────────────────────────────────────────────────────────────────
+cmd_upgrade() {
+  local mode="interactive"  # interactive | check | auto
+  local as_json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --check) mode="check" ;;
+      --auto)  mode="auto" ;;
+      --json)  as_json=1 ;;
+      *) _die "Unknown flag for upgrade: $1" ;;
+    esac
+    shift
+  done
+
+  local current="$VIBE_KIT_VERSION"
+
+  # Best-effort fetch — don't crash if offline.
+  git -C "$VIBE_KIT_ROOT" fetch --tags --quiet 2>/dev/null || {
+    if [ "$mode" = "check" ] && [ "$as_json" -eq 1 ]; then
+      jq -n --arg current "$current" \
+        '{current: $current, latest: "unknown", outdated: false, error: "fetch_failed"}'
+      return 0
+    fi
+    if [ "$mode" = "check" ]; then
+      _warn "Could not reach origin (offline or git issue). Skipping check."
+      return 0
+    fi
+    _die "Could not git fetch from origin. Check network + retry."
+  }
+
+  # Latest tag (semver-sorted; `sort -V` is BSD/GNU portable).
+  local latest
+  latest="$(git -C "$VIBE_KIT_ROOT" tag -l 'v*' | sort -V | tail -1 | sed 's/^v//')"
+  [ -z "$latest" ] && latest="unknown"
+
+  # Outdated if latest != current AND latest sorts higher.
+  local outdated="false"
+  if [ "$latest" != "unknown" ] && [ "$current" != "$latest" ]; then
+    local highest
+    highest="$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -1)"
+    [ "$highest" = "$latest" ] && outdated="true"
+  fi
+
+  # Touch the timestamp file — used by the SessionStart hook to throttle.
+  mkdir -p "$HOME/.vibe-kit"
+  date +%s > "$HOME/.vibe-kit/last-version-check" 2>/dev/null || true
+
+  if [ "$as_json" -eq 1 ]; then
+    jq -n \
+      --arg current "$current" \
+      --arg latest "$latest" \
+      --argjson outdated "$outdated" \
+      '{current: $current, latest: $latest, outdated: $outdated}'
+    [ "$outdated" = "true" ] && return 1 || return 0
+  fi
+
+  case "$mode" in
+    check)
+      if [ "$outdated" = "true" ]; then
+        _warn "vibe-kit outdated: $current → $latest"
+        echo "To upgrade: vibe-retrofit upgrade   (or /vibe-upgrade in a Claude session)" >&2
+        return 1
+      fi
+      _ok "vibe-kit up to date ($current)"
+      return 0
+      ;;
+    auto|interactive)
+      if [ "$outdated" = "false" ]; then
+        _ok "vibe-kit already at latest ($current)"
+        return 0
+      fi
+      if [ "$mode" = "interactive" ]; then
+        echo "" >&2
+        _info "vibe-kit upgrade available: $current → $latest"
+        echo "" >&2
+        echo "Commits since v$current:" >&2
+        git -C "$VIBE_KIT_ROOT" log --pretty=format:'  %h %s' "v$current..v$latest" 2>/dev/null | head -15 >&2
+        echo "" >&2
+        echo "" >&2
+        printf "Proceed with upgrade? [Y/n] " >&2
+        local reply
+        read -r reply
+        case "$reply" in
+          n|N|no|No) _info "Cancelled."; return 0 ;;
+        esac
+      fi
+      _info "Pulling latest…"
+      git -C "$VIBE_KIT_ROOT" pull --ff-only origin main >&2 \
+        || _die "git pull --ff-only failed. Uncommitted changes in $VIBE_KIT_ROOT? Commit or stash + retry."
+      _info "Re-running install…"
+      bash "$VIBE_KIT_ROOT/bin/install.sh" >&2 \
+        || _die "install.sh failed. Inspect output and re-run manually."
+      local new_version
+      new_version="$(cat "$VIBE_KIT_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]')"
+      _ok "Upgraded to $new_version"
+      ;;
+  esac
+}
+
+# ────────────────────────────────────────────────────────────────────────────
 # cmd: probe-ai-keys (v0.3.0)
 # Detects which AI provider API keys are available. Read-only — never echoes
 # the key value itself, only the variable name + where it came from.
@@ -1777,6 +1886,12 @@ SUBCOMMANDS
                         the SessionStart hook works regardless of which branch is
                         checked out. Idempotent. --dry-run supported.
 
+  upgrade [--check]     Check + apply vibe-kit upgrades. --check exits 0/1
+    [--auto] [--json]   without modifying anything. --auto skips confirmation.
+                        --json for machine-readable output. Touches
+                        ~/.vibe-kit/last-version-check; SessionStart hook
+                        throttles to 1/day off this timestamp.
+
   Skill-driven primitives (v0.3.0, called by the /vibe-retrofit SKILL):
 
   probe-ai-keys [--json]      Detect which AI provider API keys are available
@@ -1843,6 +1958,7 @@ main() {
     rollback)               cmd_rollback "$@" ;;
     doctor)                 cmd_doctor "$@" ;;
     migrate-to-global)      cmd_migrate_to_global "$@" ;;
+    upgrade)                cmd_upgrade "$@" ;;
     probe-ai-keys)          cmd_probe_ai_keys "$@" ;;
     cluster-todos)          cmd_cluster_todos "$@" ;;
     taskmaster-configure)   cmd_taskmaster_configure "$@" ;;

@@ -38,6 +38,31 @@ cd "$PROJECT_DIR" 2>/dev/null || exit 0
 [ -f .vibe-kit-version ] || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 
+# v0.4: throttled vibe-kit upgrade check. Once per 24h max. Skips silently on
+# any error (network, git, missing CLI). The check itself is cheap; the
+# `git fetch` happens via vibe-retrofit which has its own timeout.
+upgrade_warning=""
+last_check_file="$HOME/.vibe-kit/last-version-check"
+should_check=1
+if [ -f "$last_check_file" ]; then
+  last_check=$(cat "$last_check_file" 2>/dev/null || echo 0)
+  now=$(date +%s 2>/dev/null || echo 0)
+  age=$(( now - last_check ))
+  [ "$age" -lt 86400 ] && should_check=0
+fi
+if [ "$should_check" -eq 1 ] && command -v vibe-retrofit >/dev/null 2>&1; then
+  # 5s timeout so a hanging git fetch can't stall session start.
+  # NOTE: `upgrade --check` exits 1 when outdated (signals "action needed").
+  # Don't `|| echo {}` here — that overwrites the real outdated-JSON on exit-1.
+  # Empty upgrade_status on error is handled by the jq -e check below.
+  upgrade_status=$(timeout 5 vibe-retrofit upgrade --check --json 2>/dev/null || true)
+  if [ -n "$upgrade_status" ] && echo "$upgrade_status" | jq -e '.outdated == true' >/dev/null 2>&1; then
+    cur_v=$(echo "$upgrade_status" | jq -r '.current')
+    lat_v=$(echo "$upgrade_status" | jq -r '.latest')
+    upgrade_warning="⚠  vibe-kit v${lat_v} available (you're on v${cur_v}). Run /vibe-upgrade."
+  fi
+fi
+
 # Output: a compact briefing that Claude reads as initial context.
 # Keep this concise (≤35 lines) — it's injected into every session and
 # competes for context budget.
@@ -73,7 +98,8 @@ fi
 
 cat <<EOF
 [vibe-kit session-start briefing for ${repo}]
-This repo was retrofitted with vibe-kit v${ver} (tier ${tier}) on ${when}.
+${upgrade_warning:+${upgrade_warning}
+}This repo was retrofitted with vibe-kit v${ver} (tier ${tier}) on ${when}.
 Project key: ${project_key:-${repo}}.
 Reference layer: ${REF_DIR:-"(none found — run \`vibe-retrofit tier 2\` from this repo)"}.
 

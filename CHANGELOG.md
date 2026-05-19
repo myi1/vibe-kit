@@ -2,6 +2,31 @@
 
 All notable changes to vibe-kit are documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-05-19 (/vibe-upgrade — stop letting your vibe-kit go stale)
+
+vibe-kit's been shipping fast (v0.1 → v0.4 in two days). Without a built-in upgrade path, retrofitted repos quietly drift behind: you're on v0.1 features when v0.4 has landed three architecture fixes that change what's possible. v0.4 makes upgrades a first-class flow.
+
+### Added — /vibe-upgrade skill + CLI primitive
+
+- **`vibe-retrofit upgrade [--check] [--auto] [--json]`** — the bash primitive. `--check` fetches origin tags, compares local VERSION to latest, exits 0/1 (up-to-date / outdated). `--auto` runs `git pull --ff-only origin main` + `bash bin/install.sh` without confirmation. Default mode is interactive: shows commits since current version, asks for confirmation, applies. JSON output for the skill to parse.
+- **`/vibe-upgrade` skill** — thin orchestrator. Calls `vibe-retrofit upgrade --check --json` first, parses the result, pulls the CHANGELOG entry for the new version, shows the user what's new, confirms via AskUserQuestion, runs `--auto`. Idempotent. Triggers: "upgrade vibe-kit", "update vibe-kit", "is vibe-kit out of date", "/vibe-upgrade".
+- **SessionStart hook auto-check** — once per 24h (throttled via `~/.vibe-kit/last-version-check` timestamp), the hook runs `vibe-retrofit upgrade --check --json` with a 5s timeout. If outdated, the briefing prepends `⚠  vibe-kit vX.Y.Z available (you're on vA.B.C). Run /vibe-upgrade.` Zero session-start latency cost on the throttled days; ~200ms on the check day.
+
+### Fixed
+
+- **Bug caught + fixed during smoke test:** the hook's `upgrade --check` invocation initially overwrote outdated-state with `|| echo '{"outdated":false}'` because `--check` exits 1 (signal: action needed) when outdated. The fallback nuked the real JSON. Fixed by `|| true` + explicit jq-parse guard. Outdated path now actually fires the warning.
+
+### Verified
+
+- All three paths smoke-tested with spoofed VERSION:
+  - Outdated → warning line in briefing
+  - Throttled (within 24h) → no check fires
+  - Up-to-date → no warning
+
+### Migration
+
+`cd ~/dev/vibe-kit && git pull && bash bin/install.sh`. Hook reinstalls automatically. `/vibe-upgrade` is available immediately.
+
 ## [0.3.0] — 2026-05-19 (Skill owns intelligence, CLI owns primitives — real scaffolds + curated tasks + auto-provider)
 
 **Three bugs drove this release**, all reported from a real Tier 3 retrofit on a 108-TODO repo:
