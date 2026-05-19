@@ -2,6 +2,55 @@
 
 All notable changes to vibe-kit are documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-05-19 (/vibe-bug — close the loop on real-world misfires)
+
+**The problem this closes:** when a vibe-kit skill or hook misbehaves in real use, the agent either silently works around it (good for the session, terrible for vibe-kit's quality), apologizes and asks the user to file something manually (user forgets), or reports it in chat (user forgets five turns later). Bugs that should reach the maintainer don't. v0.8.0 builds the reporting path.
+
+### Added — `/vibe-bug` skill + `vibe-retrofit bug-report` CLI
+
+- **[`skill/vibe-bug/SKILL.md`](skill/vibe-bug/SKILL.md)** — the orchestrator. Two entry points: programmatic (another vibe-kit skill invokes it when detecting a defect) and user-triggered (`/vibe-bug` in chat). Drafts a structured JSON envelope (skill name, trigger class, severity, what-happened/expected/actual, reproducer, optional suggested fix with file:line + diff, env, last-5 tool-call tail, sha8 fingerprint). Hands off to the CLI primitive.
+
+- **`vibe-retrofit bug-report` CLI primitive** — handles redaction (aggressive: `$HOME` → `~`, strip git remote URLs, cap tool tail), local save (`~/.vibe-kit/bug-reports/<ts>.json`), 7-day dedup by fingerprint, and either auto-file via `gh issue create --repo myi1/vibe-kit` (if user opted in) or fallback to a pre-filled new-issue URL the user can open in browser. Subcommands: `--json <file>`, `--stdin`, `--list`, `--show <ts>`, `--upstream <ts>`.
+
+- **`vibe-retrofit bug-report-mode on|off|status`** — explicit opt-in toggle (DEFAULT OFF). Without opting in, /vibe-bug captures locally but never files. With it on, /vibe-bug auto-files via gh CLI (or URL fallback) without per-issue confirmation. Per-user choice: Yahya runs `on`, friends get to decide for themselves.
+
+- **Detection instructions added to all 4 existing skills** (vibe-retrofit, vibe-start, vibe-wrap, vibe-upgrade) — each gets a "Bug detection" section telling Claude when to invoke /vibe-bug. Hard rule on what counts as a vibe-kit defect (malformed JSON from primitives, missing referenced commands/files, hook garbage output, partial-state crashes despite preconditions met, no-progress despite all docs followed) vs what doesn't (missing API key, dirty tree, network failure, user cancelled, optional dep absent).
+
+- **CLAUDE.md template** — retrofitted repos get the meta-instruction so Claude in those sessions knows to invoke /vibe-bug when vibe-kit misbehaves.
+
+- **GitHub issue template + 5 new labels** — [`.github/ISSUE_TEMPLATE/skill-self-report.yml`](.github/ISSUE_TEMPLATE/skill-self-report.yml) mirrors the JSON envelope shape. Labels: `from-skill-self-report`, `severity:blocker/high/medium/low`.
+
+### Why opt-in (not auto-file by default)
+
+Auto-filing under the user's GitHub identity without per-issue consent is awkward — they installed vibe-kit, not "I want every misfire reported under my name." Default is local-only; user opts in once via `bug-report-mode on` and forgets. Yahya's install: opted in. Friends: their call.
+
+### Why dedup matters
+
+Same defect fires N times in a session → would produce N noise issues. Fingerprint (sha8 of trigger_class + skill + title) lets the CLI skip re-filing if the same fingerprint was filed in the last 7 days. Local copy still saved each time so we don't lose the data.
+
+### Auto-PR scope (deferred to v0.9+)
+
+Originally scoped: file PRs (not just issues) when Claude is high-confidence the fix is a one-liner. Pulled from v0.8.0 because PR-opening requires: (1) a clone of vibe-kit source on the user's machine (most users won't have), (2) fork-or-direct-push auth, (3) certainty the patch doesn't break unrelated code. Realistic compromise shipping in v0.8.0: issues include a `suggested_fix` field with file:line + diff in the body. Maintainer reviews + applies. Literal PR-opening lands in v0.9 once we know the user is in the vibe-kit repo itself.
+
+### Verified
+
+- CLI smoke: file with mode=off saves locally, dedup detects duplicate fingerprints within 7d, stdin mode works.
+- Labels created on github.com/myi1/vibe-kit (`from-skill-self-report`, 4 severity buckets).
+- 5 skills registered including /vibe-bug.
+
+### Migration
+
+```bash
+cd ~/dev/vibe-kit && git pull && bash bin/install.sh
+vibe-retrofit bug-report-mode on   # opt in to auto-filing (Yahya only — others choose)
+```
+
+Existing retrofitted repos: re-run `/vibe-retrofit` to refresh the CLAUDE.md block (it'll show the v0.8.0 bug-reporting section). Or just leave it — the skill is callable directly without the CLAUDE.md instruction, just less likely to be auto-invoked.
+
+### Posture
+
+v0.8.0 is infrastructure for self-improvement. The skill exists, the path is wired, the friction is low. The next test is real-world: when does Claude actually invoke /vibe-bug, and are those judgments right? We'll see in the next 2-3 weeks of use, and tune the trigger rubric (in skill/vibe-bug/SKILL.md) based on false positives + false negatives.
+
 ## [0.7.0] — 2026-05-19 (Methodology pivot — vibe-kit is patterns, with one reference impl for Claude Code)
 
 **The reframe that drove this release:** Yahya wanted to share vibe-kit with friends on OpenClaw. Drafted 10 questions for one friend's setup (Mubbashir, whose OpenClaw agent JP runs a hybrid workspace-wide markdown + JSONL + custom-vector memory architecture). JP's response upended the scope:

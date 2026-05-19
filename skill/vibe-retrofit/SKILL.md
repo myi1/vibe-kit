@@ -274,3 +274,7 @@ vibe-retrofit tier <N>
 - **DONE** — tier N executed, all scaffolds drafted + approved, Taskmaster (if Tier 3) imported M tasks from N raw TODOs (compression ratio noted), branch + rollback hint surfaced.
 - **DONE_WITH_CONCERNS** — user skipped a scaffold OR cluster review, OR curated PRD compression was low (<3x), OR a discovered dir from Phase 3 didn't make it into PROJECT_MAP.
 - **BLOCKED** — pre-flight failed and user can't resolve in-session, OR vibe-retrofit version too old.
+
+## Bug detection (v0.8.0)
+
+If during this skill a vibe-kit defect surfaces — bash primitive returns malformed JSON, referenced file/command doesn't exist, skill leaves user in partial state despite all preconditions met, or you couldn't make progress despite documented prerequisites — invoke `/vibe-bug` via the Skill tool with the trigger context (skill name, what failed, expected vs actual). `/vibe-bug` handles drafting + filing/local-save. Don't silently work around. NOT a trigger: missing API keys, dirty git tree (expected refusal), missing optional deps (gbrain/taskmaster — skill is supposed to skip). See `skill/vibe-bug/SKILL.md` for the full trigger rubric.

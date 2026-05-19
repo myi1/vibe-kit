@@ -88,3 +88,7 @@ Report DONE with: old version, new version, any migration steps the user should 
 Report SKIPPED if already at latest.
 Report CANCELLED if user declined.
 Report BLOCKED if the upgrade failed mid-way (with paste-ready recovery command).
+
+## Bug detection (v0.8.0)
+
+If `vibe-retrofit upgrade --check --json` returns invalid JSON, OR the upgrade succeeds but post-install version still reads the old VERSION, OR install.sh fails on a re-run that was clean prior — invoke `/vibe-bug` via the Skill tool. Don't silently retry. NOT a trigger: git pull rejected due to dirty tree (expected), network down, gh API rate limit. See `skill/vibe-bug/SKILL.md` for the full trigger rubric.

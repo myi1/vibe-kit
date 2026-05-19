@@ -140,3 +140,7 @@ End with the exact phrase **"What do you want to work on?"** — this is the cue
 Report DONE after the briefing is delivered AND you've ended with "What do you want to work on?"
 
 Report BLOCKED if pre-flight failed (not a retrofitted repo). Suggest `vibe-retrofit tier 2`.
+
+## Bug detection (v0.8.0)
+
+If `.vibe-kit-version` exists but `jq` can't parse it, OR a referenced reference-layer file vibe-kit was supposed to have created is missing (e.g., `gstack-learnings.md` doesn't exist despite the retrofit having claimed tier 2+), OR the briefing template substitution emits literal `{{slot}}` placeholders — invoke `/vibe-bug` via the Skill tool. NOT a trigger: gstack reference dir empty (user might not have gstack history yet), Taskmaster absent (tier 2 retrofit doesn't install it). See `skill/vibe-bug/SKILL.md` for the full trigger rubric.

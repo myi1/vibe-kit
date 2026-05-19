@@ -88,4 +88,14 @@ A task is NOT done until:
 - Do not declare completion until verification passes or failure is explained.
 - Do not skip the session-start ritual to "save context" — the ritual IS the context.
 
+## Reporting vibe-kit bugs (v0.8.0)
+
+When you encounter a defect in vibe-kit itself — a vibe-kit skill or hook doing something the documentation said it wouldn't, a bash primitive emitting malformed JSON, a referenced command or file that doesn't exist — invoke `/vibe-bug` via the Skill tool to surface it upstream. Don't silently work around vibe-kit defects.
+
+What counts as a vibe-kit defect (high-confidence triggers): malformed JSON from `vibe-retrofit X --json`, hook output containing obvious garbage (like a numeric field that's `"00"`), a documented command/file that doesn't exist, a skill flow leaving the user in a partial-state crash despite all preconditions met.
+
+What does NOT count (silent skip, expected): missing API keys, dirty git tree, network failure, user cancelled, optional dependency not installed (skill is supposed to handle that cleanly).
+
+`/vibe-bug` handles redaction + auto-filing (if user opted in via `vibe-retrofit bug-report-mode on`) or local-only save. Either way: drafting the report doesn't interrupt the user's actual task — it's a side-effect.
+
 <!-- /vibe-kit-retrofit:v0.1 -->

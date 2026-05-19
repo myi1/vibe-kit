@@ -916,6 +916,288 @@ Then retry."
 }
 
 # ────────────────────────────────────────────────────────────────────────────
+# cmd: bug-report (v0.8.0)
+# Closes the feedback loop on vibe-kit bugs. /vibe-bug skill writes a JSON
+# envelope describing the bug; this primitive files it as a GitHub issue
+# (if user opted in via bug-report-mode on) OR saves locally for later.
+#
+# Usage:
+#   vibe-retrofit bug-report --json <file>       # File or save the report
+#   vibe-retrofit bug-report --stdin             # Read JSON envelope from stdin
+#   vibe-retrofit bug-report --list              # List recent local reports
+#   vibe-retrofit bug-report --show <ts>         # Show one report
+#   vibe-retrofit bug-report --upstream <ts>     # Upload a local report
+#   vibe-retrofit bug-report-mode on|off|status  # Toggle auto-file (default off)
+# ────────────────────────────────────────────────────────────────────────────
+
+_bug_report_dir() {
+  echo "$HOME/.vibe-kit/bug-reports"
+}
+
+_bug_report_recent_log() {
+  echo "$(_bug_report_dir)/.recent.jsonl"
+}
+
+# Read mode (off by default). Honored at file-time.
+_bug_report_mode() {
+  local cfg="$HOME/.vibe-kit/config.json"
+  if [ -f "$cfg" ]; then
+    local m
+    m=$(jq -r '.bug_report_mode // "off"' "$cfg" 2>/dev/null)
+    [ "$m" = "null" ] && m="off"
+    echo "$m"
+  else
+    echo "off"
+  fi
+}
+
+# Aggressive redaction: $HOME → ~, strip absolute paths, strip git remote
+# URLs, strip env var values. Applied to title + body before file.
+_bug_report_redact() {
+  local text="$1"
+  # $HOME → ~
+  text="${text//$HOME/~}"
+  # Common absolute path prefixes → relative
+  text="${text//\/Users\//~/}"
+  text="${text//\/home\//~/}"
+  # Strip git URLs (https + ssh)
+  text=$(echo "$text" | sed -E 's#https://[^[:space:]]+\.git##g; s#git@[^:[:space:]]+:[^[:space:]]+\.git##g')
+  echo "$text"
+}
+
+# Build the GitHub issue body from a JSON envelope file.
+_bug_report_build_body() {
+  local envelope="$1"
+  local v
+  v=$(jq -r '.vibe_kit_version // "?"' "$envelope")
+  cat <<EOF
+**Reported via /vibe-bug** (vibe-kit $v).
+
+## What happened
+$(jq -r '.what_happened // "(missing)"' "$envelope")
+
+## Expected
+$(jq -r '.expected // "(missing)"' "$envelope")
+
+## Actual
+$(jq -r '.actual // "(missing)"' "$envelope")
+
+## Reproducer
+\`\`\`
+$(jq -r '.reproducer // "(none)"' "$envelope")
+\`\`\`
+
+$(if jq -e '.suggested_fix' "$envelope" >/dev/null 2>&1 && [ "$(jq -r '.suggested_fix' "$envelope")" != "null" ]; then
+  echo "## Suggested fix"
+  echo ""
+  echo "File: \`$(jq -r '.suggested_fix.file' "$envelope")\` (line $(jq -r '.suggested_fix.line // "?"' "$envelope"))"
+  echo ""
+  echo '```diff'
+  jq -r '.suggested_fix.diff // ""' "$envelope"
+  echo '```'
+  echo ""
+fi)
+
+## Environment
+- vibe-kit: \`$(jq -r '.vibe_kit_version // "?"' "$envelope")\`
+- skill: \`$(jq -r '.skill // "?"' "$envelope")\`
+- trigger_class: \`$(jq -r '.trigger_class // "?"' "$envelope")\`
+- severity: \`$(jq -r '.severity // "?"' "$envelope")\`
+- OS: \`$(jq -r '.env.os // "?"' "$envelope")\`
+- shell: \`$(jq -r '.env.shell // "?"' "$envelope")\`
+
+<details>
+<summary>Tool transcript tail (last 5 calls, redacted)</summary>
+
+\`\`\`
+$(jq -r '.tool_calls_tail // [] | map(tostring) | join("\n---\n")' "$envelope")
+\`\`\`
+
+</details>
+
+---
+
+_Fingerprint: \`$(jq -r '.fingerprint // "?"' "$envelope")\`. Auto-filed by /vibe-bug — see [docs/PATTERNS.md](https://github.com/myi1/vibe-kit/blob/main/docs/PATTERNS.md) Pattern 7 (forthcoming)._
+EOF
+}
+
+cmd_bug_report() {
+  local action="file"
+  local envelope=""
+  local stdin_mode=0
+  local target_ts=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json)      shift; envelope="$1" ;;
+      --stdin)     stdin_mode=1 ;;
+      --list)      action="list" ;;
+      --show)      shift; action="show"; target_ts="$1" ;;
+      --upstream)  shift; action="upstream"; target_ts="$1" ;;
+      *) _die "Unknown flag for bug-report: $1" ;;
+    esac
+    shift
+  done
+
+  local dir; dir="$(_bug_report_dir)"
+  mkdir -p "$dir"
+
+  case "$action" in
+    list)
+      ls -t "$dir"/*.json 2>/dev/null | head -20 | while read -r f; do
+        local ts skill title
+        ts=$(basename "$f" .json)
+        skill=$(jq -r '.skill // "?"' "$f" 2>/dev/null)
+        title=$(jq -r '.title // "?"' "$f" 2>/dev/null)
+        printf "  %s  [%s]  %s\n" "$ts" "$skill" "$title"
+      done
+      ;;
+    show)
+      [ -f "$dir/$target_ts.json" ] || _die "No report at $dir/$target_ts.json"
+      jq . "$dir/$target_ts.json"
+      ;;
+    upstream)
+      [ -f "$dir/$target_ts.json" ] || _die "No report at $dir/$target_ts.json"
+      _bug_report_file_to_github "$dir/$target_ts.json"
+      ;;
+    file)
+      # Read envelope
+      if [ "$stdin_mode" -eq 1 ]; then
+        envelope=$(mktemp)
+        cat > "$envelope"
+      fi
+      [ -f "$envelope" ] || _die "--json <file> or --stdin required"
+
+      # Always save locally first
+      local ts
+      ts=$(date +%Y%m%dT%H%M%S)
+      local local_file="$dir/$ts.json"
+      cp "$envelope" "$local_file"
+
+      # Dedup check via fingerprint (7-day window)
+      local fp
+      fp=$(jq -r '.fingerprint // ""' "$envelope")
+      local recent="$(_bug_report_recent_log)"
+      if [ -n "$fp" ] && [ -f "$recent" ]; then
+        local cutoff
+        cutoff=$(( $(date +%s) - 604800 )) # 7 days
+        local seen
+        seen=$(jq -r --argjson cutoff "$cutoff" --arg fp "$fp" \
+          'select(.ts >= $cutoff and .fingerprint == $fp) | .ts' "$recent" 2>/dev/null | tail -1)
+        if [ -n "$seen" ]; then
+          _info "Bug report saved locally to $local_file (dedup: same fingerprint seen recently, not refiling)"
+          return 0
+        fi
+      fi
+
+      # Record fingerprint
+      echo "{\"ts\": $(date +%s), \"fingerprint\": \"$fp\", \"local_file\": \"$local_file\"}" >> "$recent"
+
+      # File or fall back based on mode
+      local mode
+      mode="$(_bug_report_mode)"
+      if [ "$mode" = "on" ]; then
+        _bug_report_file_to_github "$local_file"
+      else
+        _info "Bug report saved locally to $local_file"
+        _info "Filing disabled (mode=$mode). To enable auto-filing: vibe-retrofit bug-report-mode on"
+        _info "To upload this report manually: vibe-retrofit bug-report --upstream $ts"
+      fi
+      ;;
+  esac
+}
+
+# Helper: file a single saved envelope to GitHub via gh CLI or URL fallback.
+_bug_report_file_to_github() {
+  local envelope="$1"
+  local title body
+  title=$(jq -r '.title // "Untitled bug report"' "$envelope")
+  title="$(_bug_report_redact "$title")"
+
+  local body_raw
+  body_raw=$(_bug_report_build_body "$envelope")
+  body="$(_bug_report_redact "$body_raw")"
+
+  local severity
+  severity=$(jq -r '.severity // "medium"' "$envelope")
+  local labels="bug,from-skill-self-report,severity:$severity"
+
+  # gh auth path
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    local url
+    url=$(gh issue create \
+      --repo myi1/vibe-kit \
+      --title "$title" \
+      --body "$body" \
+      --label "$labels" 2>/dev/null) || {
+      _warn "gh issue create failed. Falling back to URL."
+      _bug_report_emit_url "$title" "$body" "$labels"
+      return 0
+    }
+    _ok "Filed: $url"
+  else
+    _warn "gh CLI not authed. Falling back to URL."
+    _bug_report_emit_url "$title" "$body" "$labels"
+  fi
+}
+
+# Helper: emit a pre-filled new-issue URL (URL-encoded).
+_bug_report_emit_url() {
+  local title="$1" body="$2" labels="$3"
+  # URL-encode via jq
+  local t_enc b_enc l_enc
+  t_enc=$(printf '%s' "$title" | jq -sRr @uri)
+  b_enc=$(printf '%s' "$body"  | jq -sRr @uri)
+  l_enc=$(printf '%s' "$labels" | jq -sRr @uri)
+  local url="https://github.com/myi1/vibe-kit/issues/new?title=$t_enc&body=$b_enc&labels=$l_enc"
+  echo "$url"
+  _info "Open this URL in a browser to file the issue."
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# cmd: bug-report-mode (v0.8.0)
+# Opt-in toggle for auto-filing bug reports to GitHub. Defaults OFF.
+# ────────────────────────────────────────────────────────────────────────────
+cmd_bug_report_mode() {
+  local action="${1:-status}"
+  local cfg="$HOME/.vibe-kit/config.json"
+  case "$action" in
+    on)
+      mkdir -p "$HOME/.vibe-kit"
+      [ -f "$cfg" ] || echo "{}" > "$cfg"
+      local tmp
+      tmp="$(mktemp)"
+      jq '. + {bug_report_mode: "on"}' "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+      _ok "Bug report mode: ON"
+      echo "  /vibe-bug will auto-file to myi1/vibe-kit via gh CLI (or print a fallback URL)."
+      echo "  Reports are also saved locally at $(_bug_report_dir)/"
+      ;;
+    off)
+      mkdir -p "$HOME/.vibe-kit"
+      [ -f "$cfg" ] || echo "{}" > "$cfg"
+      local tmp
+      tmp="$(mktemp)"
+      jq '. + {bug_report_mode: "off"}' "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+      _ok "Bug report mode: OFF (default)"
+      echo "  /vibe-bug will save reports locally only at $(_bug_report_dir)/"
+      echo "  Upload manually via: vibe-retrofit bug-report --upstream <ts>"
+      ;;
+    status)
+      echo "Bug report mode: $(_bug_report_mode)"
+      echo "  Config: $cfg"
+      echo "  Local report dir: $(_bug_report_dir)/"
+      if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+        echo "  gh auth: OK"
+      else
+        echo "  gh auth: not authenticated (URL fallback will be used)"
+      fi
+      ;;
+    *)
+      _die "Usage: vibe-retrofit bug-report-mode {on|off|status}"
+      ;;
+  esac
+}
+
+# ────────────────────────────────────────────────────────────────────────────
 # cmd: per-turn-sync (v0.6.0)
 # Quick toggle for the v0.6 per-turn nudge hooks. Writes ~/.vibe-kit/config.json
 # so it takes effect across all projects without per-repo editing.
@@ -1972,6 +2254,15 @@ SUBCOMMANDS
     on|off|status       on/off writes ~/.vibe-kit/config.json (global).
                         status shows resolved mode + precedence chain.
                         Per-shell override: export GBRAIN_PER_TURN_SYNC=never
+  bug-report            v0.8.0: file a bug report (called by /vibe-bug skill).
+    --json <file>       Read envelope, file via gh OR save locally based on
+    --stdin             bug-report-mode. Aggressive redaction applied.
+    --list              List recent local reports.
+    --show <ts>         Show one report.
+    --upstream <ts>     Upload a local report to GitHub.
+  bug-report-mode       Toggle auto-filing bug reports. DEFAULT: off.
+    on|off|status       on = /vibe-bug auto-files via gh CLI (or URL fallback).
+                        off = local-only; user uploads manually via --upstream.
 
   Skill-driven primitives (v0.3.0, called by the /vibe-retrofit SKILL):
 
@@ -2041,6 +2332,8 @@ main() {
     migrate-to-global)      cmd_migrate_to_global "$@" ;;
     upgrade)                cmd_upgrade "$@" ;;
     per-turn-sync)          cmd_per_turn_sync "$@" ;;
+    bug-report)             cmd_bug_report "$@" ;;
+    bug-report-mode)        cmd_bug_report_mode "$@" ;;
     probe-ai-keys)          cmd_probe_ai_keys "$@" ;;
     cluster-todos)          cmd_cluster_todos "$@" ;;
     taskmaster-configure)   cmd_taskmaster_configure "$@" ;;

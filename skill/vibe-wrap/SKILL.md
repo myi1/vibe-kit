@@ -202,3 +202,7 @@ and will pick up the handoff above. /context-restore surfaces it explicitly.
 - **DONE** — all phases ran, handoff written, summary delivered.
 - **DONE_PARTIAL** — user skipped phases, handoff written, partial summary.
 - **BLOCKED** — cwd isn't a vibe-kit repo (told user to /vibe-retrofit first), or the user cancelled at Phase 0.
+
+## Bug detection (v0.8.0)
+
+If during this skill a vibe-kit defect surfaces — bash primitive returns malformed JSON, referenced file/command doesn't exist, /retro Skill invocation fails for non-network reasons, gbrain detection returns garbage, handoff write fails despite the dir being writable — invoke `/vibe-bug` via the Skill tool with the trigger context. Don't silently work around. NOT a trigger: gbrain not registered, taskmaster not installed, user cancelled. See `skill/vibe-bug/SKILL.md` for the full trigger rubric.
