@@ -916,6 +916,83 @@ Then retry."
 }
 
 # ────────────────────────────────────────────────────────────────────────────
+# cmd: per-turn-sync (v0.6.0)
+# Quick toggle for the v0.6 per-turn nudge hooks. Writes ~/.vibe-kit/config.json
+# so it takes effect across all projects without per-repo editing.
+#
+# Usage:
+#   vibe-retrofit per-turn-sync on            Enable globally (default)
+#   vibe-retrofit per-turn-sync off           Disable globally
+#   vibe-retrofit per-turn-sync status        Show current resolved mode + source
+# ────────────────────────────────────────────────────────────────────────────
+cmd_per_turn_sync() {
+  local action="${1:-status}"
+  local cfg="$HOME/.vibe-kit/config.json"
+
+  case "$action" in
+    on)
+      mkdir -p "$HOME/.vibe-kit"
+      [ -f "$cfg" ] || echo "{}" > "$cfg"
+      local tmp
+      tmp="$(mktemp)"
+      jq '. + {per_turn_sync: "on_changes"}' "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+      _ok "Per-turn sync nudges: ON (mode: on_changes)"
+      echo "  Hooks will fire on next session start."
+      ;;
+    off)
+      mkdir -p "$HOME/.vibe-kit"
+      [ -f "$cfg" ] || echo "{}" > "$cfg"
+      local tmp
+      tmp="$(mktemp)"
+      jq '. + {per_turn_sync: "never"}' "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+      _ok "Per-turn sync nudges: OFF (mode: never)"
+      echo "  PostToolUse + UserPromptSubmit hooks will skip silently."
+      echo "  Re-enable: vibe-retrofit per-turn-sync on"
+      ;;
+    status)
+      # Resolve current effective mode (env > global > per-repo > default)
+      local mode source=""
+      mode="${GBRAIN_PER_TURN_SYNC:-}"
+      [ -n "$mode" ] && source="env (\$GBRAIN_PER_TURN_SYNC)"
+      if [ -z "$mode" ] && [ -f "$cfg" ]; then
+        mode=$(jq -r '.per_turn_sync // ""' "$cfg" 2>/dev/null)
+        [ -n "$mode" ] && [ "$mode" != "null" ] && source="global ($cfg)"
+      fi
+      if [ -z "$mode" ] || [ "$mode" = "null" ]; then
+        if [ -f .vibe-kit-version ]; then
+          mode=$(jq -r '.per_turn_sync // "on_changes"' .vibe-kit-version 2>/dev/null)
+          source="per-repo (.vibe-kit-version) or default"
+        else
+          mode="on_changes"
+          source="built-in default"
+        fi
+      fi
+      echo "Per-turn sync: $mode"
+      echo "  Source:  $source"
+      echo ""
+      echo "Resolution order (highest precedence first):"
+      echo "  1. \$GBRAIN_PER_TURN_SYNC=${GBRAIN_PER_TURN_SYNC:-(unset)}"
+      if [ -f "$cfg" ]; then
+        local g
+        g=$(jq -r '.per_turn_sync // "(unset)"' "$cfg" 2>/dev/null)
+        echo "  2. $cfg per_turn_sync=$g"
+      else
+        echo "  2. $cfg (file missing)"
+      fi
+      if [ -f .vibe-kit-version ]; then
+        local r
+        r=$(jq -r '.per_turn_sync // "(unset)"' .vibe-kit-version 2>/dev/null)
+        echo "  3. .vibe-kit-version per_turn_sync=$r"
+      fi
+      echo "  4. built-in default: on_changes"
+      ;;
+    *)
+      _die "Usage: vibe-retrofit per-turn-sync {on|off|status}"
+      ;;
+  esac
+}
+
+# ────────────────────────────────────────────────────────────────────────────
 # cmd: upgrade (v0.4.0)
 # Updates vibe-kit in-place. Touches a last-check timestamp so the SessionStart
 # hook can throttle to once-per-24h.
@@ -1891,6 +1968,10 @@ SUBCOMMANDS
                         --json for machine-readable output. Touches
                         ~/.vibe-kit/last-version-check; SessionStart hook
                         throttles to 1/day off this timestamp.
+  per-turn-sync         Toggle the v0.6 per-turn auto-update nudges.
+    on|off|status       on/off writes ~/.vibe-kit/config.json (global).
+                        status shows resolved mode + precedence chain.
+                        Per-shell override: export GBRAIN_PER_TURN_SYNC=never
 
   Skill-driven primitives (v0.3.0, called by the /vibe-retrofit SKILL):
 
@@ -1959,6 +2040,7 @@ main() {
     doctor)                 cmd_doctor "$@" ;;
     migrate-to-global)      cmd_migrate_to_global "$@" ;;
     upgrade)                cmd_upgrade "$@" ;;
+    per-turn-sync)          cmd_per_turn_sync "$@" ;;
     probe-ai-keys)          cmd_probe_ai_keys "$@" ;;
     cluster-todos)          cmd_cluster_todos "$@" ;;
     taskmaster-configure)   cmd_taskmaster_configure "$@" ;;

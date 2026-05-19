@@ -2,6 +2,68 @@
 
 All notable changes to vibe-kit are documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-05-19 (Per-turn auto-update — sync hints land at the start of every turn that follows a file change)
+
+v0.5 shipped `/vibe-wrap` as the end-of-session lifecycle, with v0.6 (per-turn auto-update) intentionally deferred — the idea being "if /vibe-wrap is sticky, per-turn may not be needed." User changed their mind: ship it, test it under real load, revert or adjust based on actual friction. Reasonable — designing in the abstract is worse than collecting real data.
+
+### Architecture — why this pair of hooks, not a Stop hook
+
+The obvious naive design is a Stop hook that fires after every Claude response and runs `gbrain sync` if files changed. That's wrong for two reasons:
+
+1. **gbrain sync is slow (10-30s on the canary's 336-page brain).** Doing that 50+ times a session adds 10+ min of latency. Disqualifying.
+2. **Stop hooks with `decision: "block"` force Claude to keep responding.** They're for catching unfinished work, not for soft nudges. Using one for sync hints means turning every turn into a forced multi-pass, which is the exact opposite of "lightweight."
+
+The right pattern is the pair:
+
+- **PostToolUse** (silent file-change logger) — fires after every Write/Edit/MultiEdit/NotebookEdit. Appends the touched file path to `~/.vibe-kit/projects/<key>/.pending-syncs/changes.log`. No stdout, no Claude-visible side effect, ~1ms latency.
+- **UserPromptSubmit** (per-turn nudge injector) — fires when YOU submit your next prompt. Reads the log, builds a soft context line listing changed files + actionable hints (taskmaster in-progress count, gbrain registered & markdown changed), injects it into Claude's context for THIS turn via `hookSpecificOutput.additionalContext`. Truncates the log after firing.
+
+Claude reads the nudge at turn start, decides whether to act, does or doesn't. The hint is informational, not mandatory. Pure user choice.
+
+### Added — two new hooks + a quick toggle CLI
+
+- **`hooks/vibe-kit-posttooluse.sh`** — PostToolUse logger. Silent.
+- **`hooks/vibe-kit-userpromptsubmit.sh`** — UserPromptSubmit nudge. Smart about hints: only fires if `.taskmaster/` exists AND has in-progress tasks, OR `gbrain` is registered AND .md files changed. Skips silently if neither applies.
+- **`vibe-retrofit per-turn-sync on|off|status`** — three-line toggle, writes `~/.vibe-kit/config.json`. `status` shows the resolved mode + the full precedence chain so the user can see why it's on/off.
+- **`bin/install.sh --enable-per-turn-sync`** — opt-in wiring. Adds PostToolUse + UserPromptSubmit hooks to `~/.claude/settings.json` (backed up first).
+- **`bin/install.sh --enable-all-hooks`** — convenience alias for `--enable-hook` + `--enable-per-turn-sync`.
+
+### Three disable paths (because "bothersome" is a real failure mode)
+
+1. **Per-shell, immediate:** `export GBRAIN_PER_TURN_SYNC=never`
+2. **Global, persistent:** `vibe-retrofit per-turn-sync off`
+3. **Per-repo:** edit `.vibe-kit-version`'s `per_turn_sync` field to `"never"`
+
+Precedence: env > global > per-repo > default (`on_changes`).
+
+### Fixed bugs caught during smoke
+
+- **`grep -c` on empty input emits "0" AND exits 1.** Original `|| echo 0` fallback appended a SECOND "0" → `in_progress="00"` → never matched `-gt 0`. Fix: trust grep's stdout, default via `${var:-0}` + numeric sanitize.
+- **Original task-count regex matched the table header.** `^| ` caught `| ID | Title |` as a row. Tightened to `^\| *[0-9]` so only numbered task rows count.
+
+### Verified
+
+- PostToolUse: writes log on Write/Edit, skips on Bash/Read, skips on env=never.
+- UserPromptSubmit: emits nudge JSON with file list + hints, truncates log, skips silently when log empty, skips silently when env=never.
+- `per-turn-sync on/off/status`: writes global config, shows full precedence chain including env override.
+- install.sh installs all 3 hook files unconditionally, wiring SessionStart by default, PostToolUse + UserPromptSubmit only via `--enable-per-turn-sync`.
+
+### Migration
+
+```bash
+cd ~/dev/vibe-kit && git pull && bash bin/install.sh --enable-per-turn-sync
+```
+
+Active in the NEXT Claude Code session you start. To disable if it's bothersome:
+
+```bash
+vibe-retrofit per-turn-sync off
+```
+
+### Posture
+
+This release is explicitly a test-it-in-practice ship, not a "we've decided this is the right pattern" ship. The disable paths exist because the user wanted to evaluate friction empirically. If the nudges feel useful, the design stays. If they're noisy, we tune (raise the threshold, drop a hint type, fold into /vibe-wrap only, etc.). If they're net negative, we revert.
+
 ## [0.5.0] — 2026-05-19 (/vibe-wrap — sessions stop leaking work)
 
 **The bug that drove this release:** sessions end and stuff falls through the cracks. Tasks don't get marked done. Learnings don't get logged. gbrain falls out of sync. The next session has no handoff to pick up from. You re-discover what you just figured out.

@@ -98,77 +98,119 @@ case ":$PATH:" in
     ;;
 esac
 
-# ── SessionStart hook (optional, opt-in) ────────────────────────────────────
-# Claude Code can run a shell hook at the start of every session. We can ship
-# one that detects retrofitted repos (`.vibe-kit-version` present) and emits a
-# session-start briefing automatically — so Claude has the context loaded
-# without the user typing /vibe-start. Hook lives at:
-#   ~/.claude/hooks/vibe-kit-session-start.sh
-# Wiring into ~/.claude/settings.json is a separate, explicit opt-in.
-HOOK_SRC="$VIBE_KIT_ROOT/hooks/vibe-kit-session-start.sh"
+# ── Hooks (v0.4: SessionStart; v0.6: + PostToolUse, UserPromptSubmit) ───────
+# Claude Code shell hooks. We ship three:
+#   1. SessionStart       — auto-loads vibe-kit briefing on session start
+#   2. PostToolUse        — silently logs Write/Edit touches for per-turn sync
+#   3. UserPromptSubmit   — nudges Claude to sync gbrain / taskmaster on next turn
+#
+# All three files always install to ~/.claude/hooks/. Wiring into
+# ~/.claude/settings.json is explicit opt-in via:
+#   --enable-hook            wires SessionStart only (v0.4+ behavior)
+#   --enable-per-turn-sync   wires PostToolUse + UserPromptSubmit (v0.6+)
+#   --enable-all-hooks       wires all three
 HOOK_DIR="$HOME/.claude/hooks"
-HOOK_DEST="$HOOK_DIR/vibe-kit-session-start.sh"
 SETTINGS="$HOME/.claude/settings.json"
+HOOK_SS_SRC="$VIBE_KIT_ROOT/hooks/vibe-kit-session-start.sh"
+HOOK_SS_DEST="$HOOK_DIR/vibe-kit-session-start.sh"
+HOOK_PT_SRC="$VIBE_KIT_ROOT/hooks/vibe-kit-posttooluse.sh"
+HOOK_PT_DEST="$HOOK_DIR/vibe-kit-posttooluse.sh"
+HOOK_UP_SRC="$VIBE_KIT_ROOT/hooks/vibe-kit-userpromptsubmit.sh"
+HOOK_UP_DEST="$HOOK_DIR/vibe-kit-userpromptsubmit.sh"
 
-if [ -f "$HOOK_SRC" ]; then
-  mkdir -p "$HOOK_DIR"
-  cp "$HOOK_SRC" "$HOOK_DEST"
-  chmod +x "$HOOK_DEST"
-  _ok "SessionStart hook installed at $HOOK_DEST (not wired into settings.json yet)"
+# Back-compat (some old references)
+HOOK_SRC="$HOOK_SS_SRC"
+HOOK_DEST="$HOOK_SS_DEST"
 
-  # Check if hook is already wired into settings.json
-  already_wired="no"
-  if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
-    if jq -e --arg p "$HOOK_DEST" \
-        '.hooks.SessionStart // [] | any(.hooks[]?.command == $p)' \
-        "$SETTINGS" >/dev/null 2>&1; then
-      already_wired="yes"
-    fi
+mkdir -p "$HOOK_DIR"
+for pair in \
+  "$HOOK_SS_SRC:$HOOK_SS_DEST:SessionStart" \
+  "$HOOK_PT_SRC:$HOOK_PT_DEST:PostToolUse" \
+  "$HOOK_UP_SRC:$HOOK_UP_DEST:UserPromptSubmit"; do
+  src="${pair%%:*}"
+  rest="${pair#*:}"
+  dest="${rest%%:*}"
+  label="${pair##*:}"
+  if [ -f "$src" ]; then
+    cp "$src" "$dest"
+    chmod +x "$dest"
+    _ok "$label hook installed at $dest"
   fi
+done
 
-  if [ "$already_wired" = "yes" ]; then
-    _ok "SessionStart hook already wired in $SETTINGS."
-  else
-    _log ""
-    _log "OPTIONAL: wire the SessionStart hook into ~/.claude/settings.json so"
-    _log "Claude auto-loads vibe-kit context when starting a session on a"
-    _log "retrofitted repo (no need to type /vibe-start each time)."
-    _log ""
-    _log "To enable, run:"
-    _log "  bash $VIBE_KIT_ROOT/bin/install.sh --enable-hook"
-    _log "(Or wire it manually — see the hook file for the config snippet.)"
-  fi
-fi
-
-# Handle --enable-hook flag if passed (idempotent)
-if [ "${1:-}" = "--enable-hook" ]; then
-  if [ ! -f "$HOOK_DEST" ]; then
-    _die "Hook not installed yet. Run install.sh without --enable-hook first."
-  fi
+# Helper: idempotently add a hook entry to settings.json under .hooks.<event_name>.
+# Args: event_name matcher hook_path
+_wire_hook() {
+  local event="$1" matcher="$2" hookpath="$3"
   if ! command -v jq >/dev/null 2>&1; then
     _die "jq required to safely edit settings.json. Install jq and retry."
   fi
   mkdir -p "$HOME/.claude"
-  # Initialize settings.json if missing
   [ -f "$SETTINGS" ] || echo "{}" > "$SETTINGS"
-  # Backup
-  cp "$SETTINGS" "$SETTINGS.backup.$(date +%Y%m%d-%H%M%S)"
-  _log "Backed up $SETTINGS"
-  # Add the hook entry idempotently
+  local tmp
   tmp="$(mktemp)"
-  jq --arg p "$HOOK_DEST" '
+  jq --arg event "$event" --arg matcher "$matcher" --arg p "$hookpath" '
     .hooks = (.hooks // {}) |
-    .hooks.SessionStart = (.hooks.SessionStart // []) |
-    if (.hooks.SessionStart | any(.hooks[]?.command == $p))
+    .hooks[$event] = (.hooks[$event] // []) |
+    if (.hooks[$event] | any(.hooks[]?.command == $p))
     then .
-    else .hooks.SessionStart += [{
-      "matcher": "startup",
+    else .hooks[$event] += [{
+      "matcher": $matcher,
       "hooks": [{"type": "command", "command": $p}]
     }]
     end
   ' "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
-  _ok "SessionStart hook wired into $SETTINGS. Active in next Claude Code session."
-  exit 0
+}
+
+# Status: report which hooks are already wired
+ss_wired="no"; pt_wired="no"; up_wired="no"
+if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
+  jq -e --arg p "$HOOK_SS_DEST" '.hooks.SessionStart // [] | any(.hooks[]?.command == $p)' "$SETTINGS" >/dev/null 2>&1 && ss_wired="yes"
+  jq -e --arg p "$HOOK_PT_DEST" '.hooks.PostToolUse // [] | any(.hooks[]?.command == $p)' "$SETTINGS" >/dev/null 2>&1 && pt_wired="yes"
+  jq -e --arg p "$HOOK_UP_DEST" '.hooks.UserPromptSubmit // [] | any(.hooks[]?.command == $p)' "$SETTINGS" >/dev/null 2>&1 && up_wired="yes"
+fi
+_log ""
+_log "Hook wiring status (in $SETTINGS):"
+_log "  SessionStart:      $ss_wired"
+_log "  PostToolUse:       $pt_wired   (per-turn sync, v0.6+)"
+_log "  UserPromptSubmit:  $up_wired   (per-turn nudge,   v0.6+)"
+
+# Handle --enable-* flags (idempotent)
+case "${1:-}" in
+  --enable-hook)
+    _wire_hook SessionStart startup "$HOOK_SS_DEST"
+    cp "$SETTINGS" "$SETTINGS.backup.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+    _ok "SessionStart hook wired into $SETTINGS. Active in next Claude Code session."
+    exit 0
+    ;;
+  --enable-per-turn-sync)
+    cp "$SETTINGS" "$SETTINGS.backup.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+    _wire_hook PostToolUse "Write|Edit|MultiEdit|NotebookEdit" "$HOOK_PT_DEST"
+    _wire_hook UserPromptSubmit "" "$HOOK_UP_DEST"
+    _ok "Per-turn sync hooks wired into $SETTINGS."
+    _log "  • PostToolUse fires on Write/Edit/MultiEdit/NotebookEdit (silent file logger)"
+    _log "  • UserPromptSubmit fires on every prompt (nudges Claude to consider sync)"
+    _log "  Disable with: vibe-retrofit per-turn-sync off"
+    _log "  Or per-session: export GBRAIN_PER_TURN_SYNC=never"
+    exit 0
+    ;;
+  --enable-all-hooks)
+    cp "$SETTINGS" "$SETTINGS.backup.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+    _wire_hook SessionStart startup "$HOOK_SS_DEST"
+    _wire_hook PostToolUse "Write|Edit|MultiEdit|NotebookEdit" "$HOOK_PT_DEST"
+    _wire_hook UserPromptSubmit "" "$HOOK_UP_DEST"
+    _ok "All vibe-kit hooks wired into $SETTINGS. Active in next Claude Code session."
+    exit 0
+    ;;
+esac
+
+# Hint about opt-in if nothing wired yet
+if [ "$ss_wired" = "no" ] || ([ "$pt_wired" = "no" ] && [ "$up_wired" = "no" ]); then
+  _log ""
+  _log "OPTIONAL hooks (opt-in via flag):"
+  [ "$ss_wired" = "no" ] && _log "  bash $VIBE_KIT_ROOT/bin/install.sh --enable-hook              # SessionStart only"
+  [ "$pt_wired" = "no" ] && _log "  bash $VIBE_KIT_ROOT/bin/install.sh --enable-per-turn-sync     # PostToolUse + UserPromptSubmit"
+  _log "  bash $VIBE_KIT_ROOT/bin/install.sh --enable-all-hooks         # all three"
 fi
 
 # ── Summary ─────────────────────────────────────────────────────────────────
