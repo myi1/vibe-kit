@@ -2,6 +2,45 @@
 
 All notable changes to vibe-kit are documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-05-19 (/vibe-wrap — sessions stop leaking work)
+
+**The bug that drove this release:** sessions end and stuff falls through the cracks. Tasks don't get marked done. Learnings don't get logged. gbrain falls out of sync. The next session has no handoff to pick up from. You re-discover what you just figured out.
+
+v0.5 adds `/vibe-wrap` — an end-of-session lifecycle skill that catches all five in 3-5 minutes. Invoke it when you're done for the day (or done with a focused work block).
+
+### Added — /vibe-wrap skill
+
+Six-phase orchestrator:
+
+1. **Confirm wrap** — 1-2 line session summary + AskUserQuestion (full wrap / skip /retro / minimal / cancel).
+2. **/retro** — invokes the gstack /retro skill via the Skill tool. Heavy lifting (commit history, mistakes-made-twice, stats) lives there; this skill just orchestrates.
+3. **Taskmaster reconciliation** — lists in-progress + top-5 pending tasks, asks which the user actually finished, marks them done. Also offers to add NEW work the session uncovered (per-task confirmation).
+4. **gbrain sync** — detects if `gbrain` is installed AND this repo is registered as a source. If yes, asks before running `gbrain sync --source <slug>`. If no, skips silently with a one-line note.
+5. **Handoff stub** — the highest-value artifact. Synthesizes a handoff from the SESSION CONTEXT (not by asking the user to fill in a template — that defeats the point) covering: session summary, what shipped, what's in-flight, decisions made (quoted verbatim), next steps, open questions, context to load. Writes to `~/.vibe-kit/projects/<key>/handoffs/handoff-<timestamp>.md` so `/context-restore` picks it up next session.
+6. **KNOWN_GOTCHAS prompt** — asks if anything bit the user this session worth recording. If yes, appends a structured entry to `KNOWN_GOTCHAS.md` (creates the file if missing).
+
+### Triggers
+
+"wrap up", "end of session", "/vibe-wrap", "wrap this session", "close out", "I'm done for the day", "let's call it", "save my work for tomorrow".
+
+### Posture
+
+- **Always interactive.** Every mutating step gates on user confirmation. No silent task done-marking, no silent file writes.
+- **Synthesize the handoff from context, don't ask.** A blank "fill in your handoff template" prompt is what defeats /context-restore. The skill drafts from what it remembers, shows the user, iterates.
+- **Bias toward writing the handoff** even on partial wraps. It's the lowest-cost / highest-value artifact in the flow.
+
+### What this closes
+
+Three real session-end leaks that vibe-kit retrofitting otherwise didn't catch: Taskmaster drift (tasks stay "in-progress" forever), gbrain staleness (next session's search returns yesterday's content), and the empty-handoff problem (next session opens with no signal about what's load-bearing). Combined with v0.4's `/vibe-upgrade`, the session lifecycle now has bookends: SessionStart hook + briefing + (if outdated) upgrade nudge at the start; `/vibe-wrap` at the end.
+
+### Migration
+
+`cd ~/dev/vibe-kit && git pull && bash bin/install.sh`. `/vibe-wrap` is available immediately.
+
+### Deferred
+
+**Per-turn auto-update (idea #2 from the original ask):** intentionally deferred to a future version. The reasoning: if `/vibe-wrap` is sticky (you remember to run it at session end), per-turn auto may not be necessary. The right per-turn implementation requires a Stop-hook + LLM-judgment pattern (only sync after turns that actually changed files OR completed work) and that's a meaningful architecture choice worth not pre-committing. Re-evaluate after 1-2 weeks of /vibe-wrap usage.
+
 ## [0.4.0] — 2026-05-19 (/vibe-upgrade — stop letting your vibe-kit go stale)
 
 vibe-kit's been shipping fast (v0.1 → v0.4 in two days). Without a built-in upgrade path, retrofitted repos quietly drift behind: you're on v0.1 features when v0.4 has landed three architecture fixes that change what's possible. v0.4 makes upgrades a first-class flow.
