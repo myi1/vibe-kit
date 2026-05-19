@@ -2,6 +2,56 @@
 
 All notable changes to vibe-kit are documented in this file. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-05-19 (Methodology pivot — vibe-kit is patterns, with one reference impl for Claude Code)
+
+**The reframe that drove this release:** Yahya wanted to share vibe-kit with friends on OpenClaw. Drafted 10 questions for one friend's setup (Mubbashir, whose OpenClaw agent JP runs a hybrid workspace-wide markdown + JSONL + custom-vector memory architecture). JP's response upended the scope:
+
+> "Architectural mismatch first. vibe-kit is per-repo (`~/.vibe-kit/projects/<key>/`). My memory is workspace-wide, one truth across all projects. So 'install vibe-kit on OpenClaw' isn't the right framing. Better framing: which patterns to port INTO my setup."
+
+JP was right. vibe-kit had been framed as a product to install. It's actually a small set of patterns with one reference impl. v0.7.0 pivots to make that explicit.
+
+### Pivoted away from
+
+- The originally-scoped "v0.7.0 OpenClaw compat install layer" (3 mirror-gstack artifacts + `$OPENCLAW_SESSION` wiring as an install concern). Not building it. JP's reframe likely applies beyond JP — most workspace-memory shops won't want a parallel per-project state dir.
+
+### Pivoted toward
+
+- **[`docs/PATTERNS.md`](docs/PATTERNS.md)** — the methodology doc. Six documented patterns: per-turn nudge (Pattern 1, shipping today in `hooks/`), session-wrap ritual (Pattern 2, shipping today as `/vibe-wrap`), confidential-path autodetect (Pattern 3, designed), batch-and-relay for non-interactive contexts (Pattern 4, full protocol spec in `docs/design/`), daily-line summary (Pattern 5), score-based briefing surfacing (Pattern 6). Each pattern has a problem statement, solution shape, vibe-kit reference impl pointer, and porting checklist for other stacks.
+
+- **[`patterns/per-turn-nudge/`](patterns/per-turn-nudge/)** — extracted, env-var-parameterized version of vibe-kit's PostToolUse + UserPromptSubmit hook pair. No `.vibe-kit-version` dependency, no per-project state dir hardcoded. Configurable via `NUDGE_STATE_DIR`, `NUDGE_DISABLE`, `NUDGE_HINT_TASKMASTER`, `NUDGE_HINT_GBRAIN`, `NUDGE_HINT_CUSTOM_CMD`. JP-style stacks can drop in `nudge-hint-commitments.sh` for their JSONL task surface; vibe-kit-style stacks use the built-in Taskmaster/gbrain hints. Same hook code, different stack.
+
+- **[`patterns/session-wrap-ritual/`](patterns/session-wrap-ritual/)** — methodology-only guide for Pattern 2. SKILL.md files are too LLM-platform-specific for copy-paste portability, so this README walks the 6 phases (Confirm → Retrospective → Task reconciliation → Memory sync → Handoff write → KNOWN_GOTCHAS) with load-bearing decisions called out and integration tables for vibe-kit / gstack / OpenClaw-with-JP-memory / Cursor / custom-LLM-script.
+
+- **[`docs/design/batch-and-relay-protocol.md`](docs/design/batch-and-relay-protocol.md)** — Pattern 4 spec. Full lifecycle for skills running in non-interactive contexts where the human operator is on a different surface (Telegram, web UI). File-based state + stdout sentinels (`[VIBE-KIT:BATCH-PAUSE]`, `[VIBE-KIT:BATCH-COMPLETE]`, `[VIBE-KIT:BATCH-CANCELLED]`, `[VIBE-KIT:BATCH-ERROR]`). Schema v1 for questions/answers/state JSON. Anchored single-line sentinels so orchestrators can grep without parsing inline JSON. Reference impl lands in v0.7.1.
+
+- **[`README.md`](README.md) rewrite** — positions vibe-kit as methodology + reference impl, not as a Claude-Code-only product. Top section is the patterns table. "Use it" (Claude Code reference install) and "Port it" (any other stack) get equal billing.
+
+### What hasn't changed
+
+- The Claude Code reference impl works exactly the same. Same skills, same hooks, same `bin/vibe-retrofit` primitives, same install path. Existing users see zero regression.
+- All 4 skills (vibe-retrofit, vibe-start, vibe-upgrade, vibe-wrap) registered as before.
+- All 3 hooks (SessionStart, PostToolUse, UserPromptSubmit) installable as before via `--enable-all-hooks`.
+
+### What's next (v0.7.1)
+
+JP's other feedback surfaced 3 small features that benefit ALL users, not just JP-shaped:
+
+- **Auto-detect confidential paths** — `/vibe-wrap` looks at the handoff's file scope; if any path matches `.confidential/`, `credentials/`, `vault/`, `.env*`, `*.key`, `*.pem`, defaults handoff `confidential: true`.
+- **Daily-line summary** — `/vibe-wrap` appends one-liner to `<handoff_dir>/daily/YYYY-MM-DD.md` per wrap.
+- **Per-skill non-interactive mode** — under `$OPENCLAW_SESSION=1`, `/vibe-retrofit` enters batch-and-relay (Pattern 4's reference impl), `/vibe-wrap` auto-picks recommended, `/vibe-upgrade` skips confirm gate. `/vibe-start` already non-interactive (briefing only).
+
+These ship together as v0.7.1 once we have JP's full memory schema dump and Mubbashir's confirmation on the per-skill default choices.
+
+### Migration
+
+For Claude Code users: `cd ~/dev/vibe-kit && git pull && bash bin/install.sh`. No new commands, no new hooks. The pivot is documentation + extracted patterns; reference impl unchanged.
+
+For OpenClaw / workspace-memory users: read [`docs/PATTERNS.md`](docs/PATTERNS.md). Either port the patterns (recommended for JP-shaped stacks) or wait for v0.7.1 (`$OPENCLAW_SESSION` support in skills will let OpenClaw-spawned Claude Code sessions run vibe-kit skills cleanly).
+
+### Posture
+
+This release is methodology, not features. The shift in framing is the deliverable. Future versions can add patterns (or extract more reference impls), but the pivot itself is the work.
+
 ## [0.6.0] — 2026-05-19 (Per-turn auto-update — sync hints land at the start of every turn that follows a file change)
 
 v0.5 shipped `/vibe-wrap` as the end-of-session lifecycle, with v0.6 (per-turn auto-update) intentionally deferred — the idea being "if /vibe-wrap is sticky, per-turn may not be needed." User changed their mind: ship it, test it under real load, revert or adjust based on actual friction. Reasonable — designing in the abstract is worse than collecting real data.
