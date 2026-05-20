@@ -117,6 +117,12 @@ else
   echo "  - KNOWN_GOTCHAS.md              (project quirks, branch-coupled)"
 fi
 
+# v0.9: surface the constitution (in-repo, branch-coupled). Invariants are law.
+if [ -f docs/vibe-kit/CONSTITUTION.md ]; then
+  con_count=$(grep -c "^## " docs/vibe-kit/CONSTITUTION.md 2>/dev/null || echo 0)
+  echo "  - docs/vibe-kit/CONSTITUTION.md (${con_count} invariant categories — these are NON-NEGOTIABLE; re-validate against them at plan + implement + review. Run /vibe-check before non-trivial work.)"
+fi
+
 if [ -n "$LEGACY_IN_REPO" ]; then
   echo ""
   echo "  NOTE: this repo still uses the v0.1 in-repo reference layout. That breaks"

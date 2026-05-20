@@ -88,6 +88,14 @@ A task is NOT done until:
 - Do not declare completion until verification passes or failure is explained.
 - Do not skip the session-start ritual to "save context" — the ritual IS the context.
 
+## Project constitution (v0.9.0)
+
+If `docs/vibe-kit/CONSTITUTION.md` exists, read it before any non-trivial work. It contains this project's **non-negotiable invariants** — rules that must NOT be violated. Unlike this CLAUDE.md (which is guidance), the constitution is law. Re-validate against it at plan time, implement time, and review time.
+
+Before implementing anything non-trivial (multi-file, schema, auth, external integration), run `/vibe-check` — it validates your intended change against the constitution, the plan, existing decisions, and test coverage BEFORE you write code. Catching drift there is far cheaper than at review.
+
+If a constitutional invariant genuinely needs to change, that's a deliberate decision — use `/vibe-constitution` to amend it (with a logged rationale), don't silently violate it.
+
 ## Reporting vibe-kit bugs (v0.8.0)
 
 When you encounter a defect in vibe-kit itself — a vibe-kit skill or hook doing something the documentation said it wouldn't, a bash primitive emitting malformed JSON, a referenced command or file that doesn't exist — invoke `/vibe-bug` via the Skill tool to surface it upstream. Don't silently work around vibe-kit defects.

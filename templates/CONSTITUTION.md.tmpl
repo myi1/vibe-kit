@@ -1,0 +1,91 @@
+<!-- VIBE-KIT:PROMPT-BLOCK-START
+The /vibe-constitution skill reads this block to know what questions to ask
+when drafting a project's constitution. Block stripped before final write.
+
+A constitution is DIFFERENT from CLAUDE.md:
+- CLAUDE.md = how to work in this repo (commands, conventions, session ritual)
+- CONSTITUTION.md = the non-negotiable invariants this project will not violate
+
+Invariants are the rules an agent must re-validate against at plan time,
+implement time, and review time. They're the drift anchor. Each invariant is
+a hard constraint with a rationale + a verification method.
+
+Questions to ask (infer from codebase first where possible, then confirm):
+
+1. ARCHITECTURAL INVARIANTS — "What structural rules must NEVER be broken?
+   (e.g. 'all DB writes go through the reconcile layer', 'no business logic
+   in controllers', 'the CLI and MCP server are both generated from one
+   contract'.) I'll infer candidates from the code; you confirm + add."
+   Infer from: directory structure, existing abstractions, any ARCHITECTURE.md.
+
+2. QUALITY BARS — "What's the non-negotiable quality gate? (e.g. 'typecheck
+   must pass before commit', 'every new feature needs a test', 'no PR merges
+   with failing CI'.)"
+   Infer from: CI config, test setup, package.json scripts.
+
+3. SECURITY RULES — "What security invariants are absolute? (e.g. 'no secrets
+   in markdown or committed files', 'all auth checks server-side', 'untrusted
+   input never reaches the shell'.)"
+   Infer from: .gitignore patterns, any auth/secrets handling in code.
+
+4. DATA RULES — "What data discipline is mandatory? (e.g. 'schema changes
+   require a migration', 'no destructive ops without a backup', 'PII is
+   encrypted at rest'.)"
+   Infer from: migration dirs, schema files, ORM usage.
+
+5. PROCESS RULES — "How do changes land? (e.g. 'feature branches only, no
+   direct main commits', 'every change gets a CHANGELOG entry', 'VERSION
+   bumps in N files at once'.)"
+   Infer from: branch protection, CONTRIBUTING.md, release scripts.
+
+For each invariant the user confirms, write: the rule (imperative), a one-line
+rationale, and a verification method (how an agent or human checks compliance).
+
+Output: fill the {{SLOT_*}} sections below. Omit a section entirely if the
+user has no invariants in that category (don't pad with weak rules — a
+constitution with 4 real invariants beats one with 20 vague ones).
+VIBE-KIT:PROMPT-BLOCK-END -->
+
+# Constitution — {{project_name}}
+
+The non-negotiable invariants of this project. An agent must re-validate
+against these at plan time, implement time, and review time. Violating an
+invariant is a stop condition, not a judgment call.
+
+Curated by `/vibe-constitution` on {{retrofitted_at}}. Amend deliberately
+(an invariant change is a real decision — record why in the relevant
+handoff or CHANGELOG).
+
+> **How this differs from CLAUDE.md:** CLAUDE.md tells you *how to work here*
+> (commands, conventions, session ritual). This file tells you *what this
+> project will not violate*. CLAUDE.md is guidance; the constitution is law.
+
+## Architectural invariants
+
+{{SLOT_ARCHITECTURAL}}
+
+## Quality bars
+
+{{SLOT_QUALITY}}
+
+## Security rules
+
+{{SLOT_SECURITY}}
+
+## Data rules
+
+{{SLOT_DATA}}
+
+## Process rules
+
+{{SLOT_PROCESS}}
+
+## Amendment log
+
+Invariants change rarely and deliberately. When one does, append here:
+
+```
+- <YYYY-MM-DD>: <what changed> — <why> (by <who>)
+```
+
+_(no amendments yet)_

@@ -61,6 +61,57 @@ For default users: nothing changes. Continue as before.
 
 This release is the integration JP designed for in the schema dump. Every JSONL row vibe-kit emits matches the shapes JP showed (decisions: `{ts, decision, by, scope, ...}`; commitments: `{ts, to, what, due, status}`; follow-ups: `{ts, what, with, due, status}`), plus the universal `confidential: bool` and a `source: "vibe-kit"` tag so JP can filter vibe-kit-emitted rows downstream if needed. The handoff markdown lands where JP's indexer will pick it up on the next 15-min cron pass.
 
+## [0.9.0] — 2026-05-19 (Constitution + pre-implement check — the drift anchor, adapted from spec-kit)
+
+**Where this came from:** assessed GitHub's spec-kit against the stack. Its whole reason for existing is drift prevention — which is one of the explicit goals here. Two of its concepts fill real gaps and adapt cleanly. v0.9.0 brings them in (the toolkit itself stays unadopted — too heavyweight and overlaps the existing plan-mode flow).
+
+### The gap these fill
+
+You had three layers of project knowledge: CLAUDE.md (how to work here), KNOWN_GOTCHAS.md (pitfalls), gstack-learnings.md (institutional knowledge). All three are *guidance*. None is *law* — a hard set of invariants the agent re-validates against at every phase. Without that anchor, drift creeps: the agent reads CLAUDE.md, then implements freely, and nothing re-checks the work against the project's non-negotiables. spec-kit's `constitution` concept is the missing layer.
+
+### Added — /vibe-constitution skill + CONSTITUTION.md
+
+- **`docs/vibe-kit/CONSTITUTION.md`** — the invariants layer above CLAUDE.md. Five categories: architectural, quality, security, data, process. Each invariant carries a rule (imperative, testable), a rationale, and a verification method. IN-repo + branch-coupled (an invariant change shows in the git diff — that's the point). Template at `templates/CONSTITUTION.md.tmpl` uses the VIBE-KIT:PROMPT-BLOCK convention.
+- **`/vibe-constitution` skill** — infers invariant candidates from the codebase first (CI config, .gitignore, migration dirs, existing abstractions), then runs category-by-category Q&A to confirm. Fresh-draft or amend mode. Amendments require explicit confirmation + a logged rationale (changing law is a real decision). Refuses vague invariants — "be careful with X" is not an invariant; "X must Y, verified by Z" is.
+
+### Added — /vibe-check pre-implement gate
+
+- **`/vibe-check` skill** — adapted from spec-kit's `/analyze`. Validates an intended change BEFORE code gets written, against four checks: (1) constitutional compliance, (2) plan completeness, (3) contradiction with existing decisions (queries gbrain + KNOWN_GOTCHAS), (4) test coverage. Verdict: PASS / CONCERNS / VIOLATION. Catching "this breaks the reconcile-layer invariant" at plan time costs a sentence; catching it at review costs a rewrite.
+- **Scope boundary:** `/vibe-check` is pre-implement (validates intent against invariants). gstack `/review` is pre-land (catches bugs in written code). They compose — check before you build, review before you land. Different timing, different job.
+
+### Wired in
+
+- **SessionStart hook** surfaces `docs/vibe-kit/CONSTITUTION.md` in the briefing (invariant-category count + reminder that invariants are non-negotiable + pointer to /vibe-check).
+- **CLAUDE.md template** gets a "Project constitution" section — read it before non-trivial work, treat invariants as law, run /vibe-check before implementing, amend deliberately via /vibe-constitution.
+- **/vibe-retrofit** gets Phase 6.5 — offers to establish the constitution during retrofit (Tier 2+, optional, invokes /vibe-constitution).
+
+### What we deliberately did NOT adopt from spec-kit
+
+- The `specify` CLI toolkit — too heavyweight; we want the patterns, not the framework.
+- In-repo per-feature spec artifacts (`/speckit.specify` → `.specify/specs/`) — overlaps gstack's office-hours → autoplan design-doc flow. Deferred; revisit as a stage-2 multi-agent context schema.
+- 30+ agent integrations — Claude Code focused.
+- spec-kit's memory concept — gbrain + JP-style integration is far ahead.
+
+### Migration
+
+```bash
+cd ~/dev/vibe-kit && git pull && bash bin/install.sh
+# In any repo, establish the constitution:
+/vibe-constitution
+# Then before non-trivial work:
+/vibe-check
+```
+
+Existing retrofitted repos: re-run `/vibe-retrofit` to refresh the CLAUDE.md block (picks up the constitution section), or just run `/vibe-constitution` directly.
+
+### Credit
+
+The constitution + analyze concepts are adapted from [GitHub spec-kit](https://github.com/github/spec-kit). vibe-kit's implementation is its own (skill-driven Q&A with codebase inference, branch-coupled storage, gbrain integration on the check), but the design vocabulary is theirs.
+
+### Posture
+
+Stage-1 drift prevention. The constitution is the anchor; /vibe-check is the gate that uses it. Both serve "minimize drift" directly. Next: v0.10.0 brings the read-only board (kanban over your task surfaces) for visibility — the other stage-1 lever.
+
 ## [0.8.0] — 2026-05-19 (/vibe-bug — close the loop on real-world misfires)
 
 **The problem this closes:** when a vibe-kit skill or hook misbehaves in real use, the agent either silently works around it (good for the session, terrible for vibe-kit's quality), apologizes and asks the user to file something manually (user forgets), or reports it in chat (user forgets five turns later). Bugs that should reach the maintainer don't. v0.8.0 builds the reporting path.

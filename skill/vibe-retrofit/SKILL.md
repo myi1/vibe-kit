@@ -121,6 +121,14 @@ For each template in `~/dev/vibe-kit/templates/docs/vibe-kit/*.tmpl`:
 
 Also draft `KNOWN_GOTCHAS.md` at the repo root if it doesn't exist — but here the Q&A is short ("Any project quirks you want to flag right now? Things that have bitten you before that future-you should know?"). If user has nothing, write a minimal scaffold with the section format and a note that `/learn` will populate it over time.
 
+### Phase 6.5 — Constitution (v0.9.0, Tier 2+, optional)
+
+After the scaffolds, offer to establish the project's constitution — the non-negotiable invariants (the drift anchor, adapted from spec-kit). Ask:
+
+> "Want to set a constitution for this repo? It's the layer above CLAUDE.md — the hard invariants an agent must never violate (e.g. 'DB writes go through reconcile', 'no secrets in markdown'). I'll infer candidates from the code; you confirm. Strongly recommended for drift prevention, but skippable."
+
+If yes, invoke `/vibe-constitution` via the Skill tool (it handles inference + Q&A + write to `docs/vibe-kit/CONSTITUTION.md`). If the user skips, note it — they can run `/vibe-constitution` anytime later.
+
 **Posture during Q&A:**
 - Ask 1-2 questions per turn. Don't dump 8 questions at once.
 - Quote the user's answer verbatim when drafting — don't paraphrase unless asked.
