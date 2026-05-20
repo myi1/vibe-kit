@@ -916,6 +916,149 @@ Then retry."
 }
 
 # ────────────────────────────────────────────────────────────────────────────
+# cmd: board (v0.10.0)
+# Read-only kanban over scattered task surfaces. JSON-first: the aggregator
+# (--json) unifies Taskmaster + git PRs + commitments.jsonl + specs into one
+# board JSON, consumable by both the bun-serve dashboard AND /vibe-start.
+#
+# Usage:
+#   vibe-retrofit board --json [--repo PATH]   # aggregate, print JSON
+#   vibe-retrofit board [--port N] [--open]     # live dashboard via bun serve
+# ────────────────────────────────────────────────────────────────────────────
+
+# Pure aggregator. Reads all task surfaces, emits unified board JSON.
+_board_aggregate() {
+  local repo="${1:-$PWD}"
+  cd "$repo" 2>/dev/null || { echo '{"error":"cannot cd to repo","columns":[]}'; return 1; }
+
+  local now; now=$(date +%s)
+  local stale_days="${VIBE_KIT_BOARD_STALE_DAYS:-7}"
+  local stale_secs=$(( stale_days * 86400 ))
+  local repo_name; repo_name=$(basename "$repo")
+
+  # --- helper: age in days from an ISO-8601 timestamp ---
+  _iso_age_days() {
+    local iso="$1" epoch
+    epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$iso" +%s 2>/dev/null \
+         || date -d "$iso" +%s 2>/dev/null || echo "$now")
+    echo $(( (now - epoch) / 86400 ))
+  }
+
+  # --- Taskmaster: read tasks.json directly (tolerant of format variants) ---
+  local tm_backlog="[]" tm_inflight="[]" tm_landed="[]"
+  local tm_file=""
+  for cand in .taskmaster/tasks/tasks.json .taskmaster/tasks.json; do
+    [ -f "$cand" ] && { tm_file="$cand"; break; }
+  done
+  if [ -n "$tm_file" ]; then
+    # Newer taskmaster nests under .master.tasks; older is top-level .tasks
+    local all_tasks
+    all_tasks=$(jq -c '(.master.tasks // .tasks // [])' "$tm_file" 2>/dev/null || echo "[]")
+    tm_backlog=$(echo "$all_tasks" | jq -c '[.[] | select(.status=="pending") | {title: .title, source: "taskmaster", id: (.id|tostring)}]' 2>/dev/null || echo "[]")
+    tm_inflight=$(echo "$all_tasks" | jq -c '[.[] | select(.status=="in-progress" or .status=="in_progress") | {title: .title, source: "taskmaster", id: (.id|tostring)}]' 2>/dev/null || echo "[]")
+    tm_landed=$(echo "$all_tasks" | jq -c '[.[] | select(.status=="done") | {title: .title, source: "taskmaster", id: (.id|tostring)}] | .[0:10]' 2>/dev/null || echo "[]")
+  fi
+
+  # --- commitments.jsonl (jp-jsonl mode) ---
+  local commit_backlog="[]"
+  if [ "$(_memory_format_mode 2>/dev/null)" = "jp-jsonl" ]; then
+    local mdir; mdir=$(jq -r '.memory_dir // ""' "$HOME/.vibe-kit/config.json" 2>/dev/null)
+    if [ -n "$mdir" ] && [ -f "$mdir/commitments.jsonl" ]; then
+      # Latest line per `what` wins; keep only status:open
+      commit_backlog=$(jq -sc '
+        group_by(.what) | map(sort_by(.ts) | last)
+        | [.[] | select(.status=="open") | {title: .what, source: "commitment", id: (.what|.[0:24])}]
+      ' "$mdir/commitments.jsonl" 2>/dev/null || echo "[]")
+    fi
+  fi
+
+  # --- git PRs via gh ---
+  local pr_review="[]" pr_landed="[]"
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    pr_review=$(gh pr list --state open --json number,title,url,isDraft,createdAt 2>/dev/null | jq -c '
+      [.[] | {title: .title, source: (if .isDraft then "PR (draft)" else "PR" end), id: (.number|tostring), url: .url}]
+    ' 2>/dev/null || echo "[]")
+    pr_landed=$(gh pr list --state merged --limit 8 --json number,title,url,mergedAt 2>/dev/null | jq -c '
+      [.[] | {title: .title, source: "PR (merged)", id: (.number|tostring), url: .url}]
+    ' 2>/dev/null || echo "[]")
+  fi
+
+  # --- git branches with unmerged work (in-flight signal) ---
+  local branch_inflight="[]"
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    local default_branch
+    default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
+    branch_inflight=$(git for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null \
+      | grep -vE "^(${default_branch}|main|master)$" \
+      | head -10 \
+      | jq -Rc '{title: ("branch: " + .), source: "git-branch", id: .}' 2>/dev/null \
+      | jq -sc '.' 2>/dev/null || echo "[]")
+  fi
+
+  # --- specs + constitution presence ---
+  local specs="[]"
+  if [ -f docs/vibe-kit/CONSTITUTION.md ]; then
+    specs=$(echo "$specs" | jq -c '. + [{title: "CONSTITUTION.md", source: "constitution", id: "constitution"}]')
+  fi
+  if [ -d docs/vibe-kit/specs ]; then
+    local spec_items
+    spec_items=$(ls docs/vibe-kit/specs/ 2>/dev/null | head -10 | jq -Rc '{title: ., source: "spec", id: .}' | jq -sc '.' 2>/dev/null || echo "[]")
+    specs=$(echo "$specs $spec_items" | jq -sc 'add')
+  fi
+
+  # --- assemble columns ---
+  jq -n \
+    --argjson backlog "$(echo "$tm_backlog $commit_backlog" | jq -sc 'add')" \
+    --argjson inflight "$(echo "$tm_inflight $branch_inflight" | jq -sc 'add')" \
+    --argjson review "$pr_review" \
+    --argjson landed "$(echo "$tm_landed $pr_landed" | jq -sc 'add')" \
+    --argjson specs "$specs" \
+    --arg repo "$repo_name" \
+    --arg generated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{
+      repo: $repo,
+      generated_at: $generated,
+      columns: [
+        {name: "Specs & Invariants", items: $specs},
+        {name: "Backlog", items: $backlog},
+        {name: "In flight", items: $inflight},
+        {name: "Pending review", items: $review},
+        {name: "Landed", items: $landed}
+      ]
+    }'
+}
+
+cmd_board() {
+  local as_json=0 port=4317 do_open=0 repo="$PWD"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json)  as_json=1 ;;
+      --port)  shift; port="$1" ;;
+      --open)  do_open=1 ;;
+      --repo)  shift; repo="$1" ;;
+      *) _die "Unknown flag for board: $1" ;;
+    esac
+    shift
+  done
+
+  if [ "$as_json" -eq 1 ]; then
+    _board_aggregate "$repo"
+    return 0
+  fi
+
+  # Live dashboard mode — requires bun
+  _check_command bun
+  local server="$VIBE_KIT_ROOT/bin/board-server.ts"
+  [ -f "$server" ] || _die "Board server not found at $server. Re-run install.sh."
+  _info "vibe-kit board → http://localhost:$port  (read-only; Ctrl-C to stop)"
+  if [ "$do_open" -eq 1 ]; then
+    ( sleep 1; (command -v open >/dev/null 2>&1 && open "http://localhost:$port") \
+        || (command -v xdg-open >/dev/null 2>&1 && xdg-open "http://localhost:$port") ) &
+  fi
+  VIBE_KIT_BOARD_REPO="$repo" VIBE_KIT_ROOT="$VIBE_KIT_ROOT" exec bun run "$server" "$port"
+}
+
+# ────────────────────────────────────────────────────────────────────────────
 # cmd: memory-format (v0.7.1)
 # JP-jsonl integration. Workspace-memory shops opt in via this command;
 # .vibe-wrap then writes handoffs as both prose markdown AND structured
@@ -2436,6 +2579,11 @@ SUBCOMMANDS
                         ~/.vibe-kit/config.json.
     set vibe-kit-markdown   Revert to default (per-project handoffs).
     status              Show resolved format + precedence chain.
+  board                 v0.10.0: read-only kanban over your task surfaces.
+    --json [--repo P]   Aggregate Taskmaster + git PRs + commitments + specs
+                        into unified board JSON (also feeds /vibe-start).
+    [--port N] [--open] Live dashboard via bun serve (default port 4317).
+                        --open launches the browser. Read-only, Ctrl-C stops.
 
   Skill-driven primitives (v0.3.0, called by the /vibe-retrofit SKILL):
 
@@ -2508,6 +2656,7 @@ main() {
     bug-report)             cmd_bug_report "$@" ;;
     bug-report-mode)        cmd_bug_report_mode "$@" ;;
     memory-format)          cmd_memory_format "$@" ;;
+    board)                  cmd_board "$@" ;;
     probe-ai-keys)          cmd_probe_ai_keys "$@" ;;
     cluster-todos)          cmd_cluster_todos "$@" ;;
     taskmaster-configure)   cmd_taskmaster_configure "$@" ;;

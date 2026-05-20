@@ -85,6 +85,19 @@ echo ""
 
 If a handoff note exists and is recent (within 7 days), read it — it's the most likely place "where we left off" is recorded.
 
+## Phase 4.5 — Board state (v0.10.0)
+
+Surface the unified board so the briefing includes a live picture of what's in flight / pending / landed across all task surfaces. This is drift detection at session start.
+
+```bash
+vibe-retrofit board --json 2>/dev/null | jq -r '
+  "Board: " +
+  ([.columns[] | "\(.name)=\(.items|length)"] | join(", "))
+' 2>/dev/null || echo "Board: (unavailable)"
+```
+
+If any column has a notably high count (e.g. many in-flight, or PRs sitting in pending-review), call it out in the briefing — that's the drift signal ("3 in-flight tasks, 2 PRs pending review since >3 days"). For the full visual, mention: `vibe-retrofit board` opens the live kanban.
+
 ## Phase 5 — KNOWN_GOTCHAS quick check
 
 ```bash

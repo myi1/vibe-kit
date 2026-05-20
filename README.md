@@ -50,19 +50,29 @@ vibe-retrofit discover                 # read-only scan
 #   /vibe-retrofit
 ```
 
-Four skills installed:
+Seven skills installed:
 - `/vibe-retrofit` — interactive retrofit (the main entry)
-- `/vibe-start` — on-demand session-start ritual
+- `/vibe-start` — on-demand session-start ritual (now surfaces board state)
 - `/vibe-wrap` — end-of-session lifecycle (Pattern 2)
 - `/vibe-upgrade` — keep vibe-kit current
+- `/vibe-bug` — report a vibe-kit defect (auto-file opt-in)
+- `/vibe-constitution` — establish project invariants (the drift anchor, v0.9)
+- `/vibe-check` — pre-implement consistency gate against the constitution (v0.9)
 
 Three hooks wired:
-- **SessionStart** — auto-loads vibe-kit briefing per repo; nudges if vibe-kit is outdated
+- **SessionStart** — auto-loads vibe-kit briefing per repo; nudges if vibe-kit is outdated; surfaces the constitution
 - **PostToolUse** — Pattern 1 silent file-change logger
 - **UserPromptSubmit** — Pattern 1 nudge injector
 
-Daily use: invoke `/vibe-wrap` at end-of-session. Per-turn nudges fire
-automatically (disable with `vibe-retrofit per-turn-sync off` if noisy).
+The board (v0.10):
+```bash
+vibe-retrofit board --open    # live read-only kanban over Taskmaster + PRs + commitments + specs
+vibe-retrofit board --json    # the same data as JSON (also feeds /vibe-start)
+```
+
+Daily use: `/vibe-start` to load context (+ board state), `/vibe-check` before non-trivial
+work, build, `/vibe-wrap` at end-of-session. Per-turn nudges fire automatically (disable
+with `vibe-retrofit per-turn-sync off` if noisy).
 
 ## Port it (any other stack)
 

@@ -61,6 +61,56 @@ For default users: nothing changes. Continue as before.
 
 This release is the integration JP designed for in the schema dump. Every JSONL row vibe-kit emits matches the shapes JP showed (decisions: `{ts, decision, by, scope, ...}`; commitments: `{ts, to, what, due, status}`; follow-ups: `{ts, what, with, due, status}`), plus the universal `confidential: bool` and a `source: "vibe-kit"` tag so JP can filter vibe-kit-emitted rows downstream if needed. The handoff markdown lands where JP's indexer will pick it up on the next 15-min cron pass.
 
+## [0.10.0] — 2026-05-20 (Board — a read-only kanban over your scattered task surfaces)
+
+**The visibility lever.** You've got tasks scattered across Taskmaster, git PRs, JP-style commitments.jsonl, and (post-v0.9) specs + a constitution. No single place shows "what's in backlog / in flight / pending review / landed." v0.10.0 adds a read-only board that unifies them — for both your eyes (live dashboard) and the agent's context (/vibe-start surfaces board state).
+
+### The architecture decision that matters
+
+**JSON-first, read-only, the CLI/agent stays source of truth.** The board is a *lens*, not a *store*. It does NOT become a new place you create/edit tasks (that's the trap that would make it yet another surface to maintain — exactly what JP warned against). It aggregates what already exists:
+
+| Column | Sources |
+|---|---|
+| Specs & Invariants | `docs/vibe-kit/CONSTITUTION.md` + `docs/vibe-kit/specs/*` |
+| Backlog | Taskmaster pending + `commitments.jsonl` status:open (jp-jsonl mode) |
+| In flight | Taskmaster in-progress + unmerged git branches |
+| Pending review | open PRs (`gh pr list`) |
+| Landed | merged PRs + Taskmaster done (recent) |
+
+### Added
+
+- **`vibe-retrofit board --json [--repo PATH]`** — the aggregator. Reads all task surfaces, emits one unified board JSON. Degrades gracefully: no Taskmaster → skip those, no gh auth → empty PR columns, no constitution → skip specs column. Reads `.taskmaster/tasks/tasks.json` directly (tolerant of nested `.master.tasks` and flat `.tasks` formats). **This JSON also feeds `/vibe-start`** — the agent sees board state at session start, which is drift detection (e.g. "3 in-flight, 2 PRs pending review, stale in-progress from 6 days ago").
+
+- **`vibe-retrofit board [--port N] [--open]`** — the live dashboard. Starts a `bun serve` server (default port 4317), serves a dark-theme kanban that polls `/api/board.json` every 5s for live refresh. `--open` launches the browser. Read-only. Ctrl-C stops. The server (`bin/board-server.ts`) is a thin HTTP wrapper — it proxies to `vibe-retrofit board --json` so aggregation logic lives in ONE place (the bash CLI).
+
+- **`/vibe-start` Phase 4.5** — surfaces board column counts in the session-start briefing. High counts get called out as drift signals.
+
+### Why bun serve (not a static HTML file)
+
+You picked the live-updating local server over a self-contained generated HTML. Trade-off accepted: it's a foreground daemon (Ctrl-C to stop) but the board auto-refreshes as task state changes — no re-running a generate command. Zero deps beyond bun (which you have). The HTML+JS is embedded in `board-server.ts`; nothing to build or deploy.
+
+### What it deliberately does NOT do
+
+- **No write-back.** You can't move cards or edit tasks in the UI. It's a window, not a controller. Move tasks via Taskmaster / git / your normal flow; the board reflects it on next poll.
+- **No new task store.** Zero new source of truth. If the board shows it, it came from a surface you already maintain.
+- **No auth, no cloud, no deploy.** localhost only. Personal tool.
+
+### Migration
+
+```bash
+cd ~/dev/vibe-kit && git pull && bash bin/install.sh
+cd ~/your/repo
+vibe-retrofit board --open    # live kanban in browser
+# or just the data:
+vibe-retrofit board --json | jq
+```
+
+Note: `board` (dashboard mode) needs `bun` on PATH. `board --json` (aggregator) needs only jq + git + optionally gh/task-master.
+
+### Stage-1 status
+
+That's both stage-1 levers now shipped: **drift prevention** (v0.9 constitution + /vibe-check) and **visibility** (v0.10 board). Combined with the memory/recall work (gbrain + JP integration + handoffs), the single-agent stack is materially more complete. Stage 2 (jurisdiction-limited multi-agent) remains future — but the board's JSON aggregation + the constitution-as-shared-context are both reusable substrates when that time comes.
+
 ## [0.9.0] — 2026-05-19 (Constitution + pre-implement check — the drift anchor, adapted from spec-kit)
 
 **Where this came from:** assessed GitHub's spec-kit against the stack. Its whole reason for existing is drift prevention — which is one of the explicit goals here. Two of its concepts fill real gaps and adapt cleanly. v0.9.0 brings them in (the toolkit itself stays unadopted — too heavyweight and overlaps the existing plan-mode flow).
